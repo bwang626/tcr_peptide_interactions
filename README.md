@@ -19,8 +19,6 @@ python build_dataset.py         # cleaned VDJdb, IEDB, McPAS, and combined TRB d
 - Official site used for download: `https://friedmanlab.weizmann.ac.il/McPAS-TCR/`
 - Local file expected by the pipeline: `./McPAS-TCR.csv`
 
-For team handoff, it is fine to share the checked-in `McPAS-TCR.csv` file directly instead of asking everyone to redownload it.
-
 ## Suggested workflow
 
 1. Fetch raw data with the scripts above.
