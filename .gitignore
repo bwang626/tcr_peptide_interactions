@@ -12,3 +12,11 @@ processed/
 __pycache__/
 *.pyc
 .ipynb_checkpoints/
+
+# outputs (large binary files - embeddings, checkpoints)
+outputs/
+*.npy
+*.pt
+
+# vscode
+.vscode/
