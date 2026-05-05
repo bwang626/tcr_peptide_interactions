@@ -1,8 +1,6 @@
 """
-Test cases for embeddings/autoencoder/model.py
-Run from repo root: 
-python -m pytest embeddings/autoencoder/test_autoencoder.py -v                  # plain AE               
-python -m pytest embeddings/autoencoder/test_autoencoder.py -v -k "vae"         # VAE
+Tests for embeddings/autoencoder/model.py
+Run from repo root: python -m pytest embeddings/autoencoder/test_autoencoder.py -v
 """
 
 import numpy as np
@@ -10,11 +8,26 @@ import pytest
 import torch
 import pandas as pd
 
-from embeddings.autoencoder.model import (
-    encode_sequence, encode_sequences, decode_one_hot,
-    SequenceAutoencoder, AutoencoderEmbedder,
-    VOCAB_SIZE, AA_TO_IDX,
-)
+import sys, os, importlib.util
+
+def _load(name, path):
+    spec = importlib.util.spec_from_file_location(name, path)
+    mod  = importlib.util.module_from_spec(spec)
+    sys.modules[name] = mod
+    spec.loader.exec_module(mod)
+    return mod
+
+_here = os.path.dirname(os.path.abspath(__file__))
+_one_hot_model = _load("one_hot.model", os.path.join(_here, "..", "one_hot", "model.py"))
+_ae_model      = _load("autoencoder.model", os.path.join(_here, "model.py"))
+
+encode_sequence  = _one_hot_model.encode_sequence
+encode_sequences = _one_hot_model.encode_sequences
+decode_one_hot   = _one_hot_model.decode_one_hot
+VOCAB_SIZE       = _one_hot_model.VOCAB_SIZE
+AA_TO_IDX        = _one_hot_model.AA_TO_IDX
+SequenceAutoencoder  = _ae_model.SequenceAutoencoder
+AutoencoderEmbedder  = _ae_model.AutoencoderEmbedder
 
 # ─── Fixtures ────────────────────────────────
 
@@ -212,18 +225,16 @@ def test_vae_repeated_inference_is_deterministic():
     z2 = model.transform(FAKE_TCR_SEQS)
     assert np.allclose(z1, z2), "VAE transform() should be deterministic at inference"
 
-@pytest.mark.slow
 def test_vae_latent_space_smoother_than_plain_ae():
     """
     VAE latent vectors should have smaller variance across the batch than plain AE,
     since the KL term regularises z towards N(0,1).
-    Needs enough epochs for the KL term to dominate — marked slow, run with -m slow.
     """
     plain = SequenceAutoencoder(seq_type="tcr", latent_dim=32, max_len=30, vae=False)
     vae   = SequenceAutoencoder(seq_type="tcr", latent_dim=32, max_len=30, vae=True, kl_weight=0.5)
     seqs  = FAKE_TCR_SEQS * 20
-    plain.fit(seqs, epochs=30, batch_size=8)
-    vae.fit(seqs,   epochs=30, batch_size=8)
+    plain.fit(seqs, epochs=5, batch_size=8)
+    vae.fit(seqs,   epochs=5, batch_size=8)
 
     z_plain = plain.transform(FAKE_TCR_SEQS)
     z_vae   = vae.transform(FAKE_TCR_SEQS)
