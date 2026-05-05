@@ -89,3 +89,48 @@ Sources:
 - IEDB: https://www.iedb.org/database_export_v3.php
 - VDJdb: https://github.com/antigenomics/vdjdb-db/releases
 - McPAS-TCR: https://friedmanlab.weizmann.ac.il/McPAS-TCR/
+
+## Embeddings
+
+Fixed-length vector representations of TCR and peptide sequences, used as input to downstream models. All outputs are written to `outputs/embeddings/` (gitignored).
+
+### One-hot encoding
+
+No training required. Sequences are one-hot encoded and flattened.
+
+```bash
+python embeddings/one_hot/embed.py               # full dataset
+```
+
+Outputs (in `outputs/embeddings/one_hot/`):
+
+| File | Shape |
+|---|---|
+| `tcr_embeddings.npy` | (N, 660) |
+| `peptide_embeddings.npy` | (N, 330) |
+| `combined_embeddings.npy` | (N, 990) |
+| `embedding_index.csv` | row → (cdr3, peptide) |
+
+### Autoencoder (plain AE and VAE)
+
+Learned embeddings via a Conv1D + BiGRU sequence autoencoder. Supports plain AE and variational (VAE) modes.
+
+```bash
+python embeddings/autoencoder/train.py                            # plain AE
+python embeddings/autoencoder/train.py --vae                      # VAE
+python embeddings/autoencoder/train.py --compare                  # train both, print comparison
+```
+
+Outputs (in `outputs/embeddings/autoencoder/{plain_ae,vae}/`):
+
+| File | Shape |
+|---|---|
+| `tcr_embeddings.npy` | (N, latent_dim) |
+| `peptide_embeddings.npy` | (N, latent_dim) |
+| `combined_embeddings.npy` | (N, 2 × latent_dim) |
+| `checkpoints/tcr_ae.pt` | trained TCR autoencoder weights |
+| `checkpoints/peptide_ae.pt` | trained peptide autoencoder weights |
+| `embedding_index.csv` | row → (cdr3, peptide) |
+
+Default `latent_dim=64`, so combined shape is (N, 128). See `embeddings/autoencoder/README.md` for all options.
+
