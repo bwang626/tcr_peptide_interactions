@@ -3,6 +3,7 @@ iedb_data/*
 !iedb_data/analyze_csv.ipynb
 vdjdb_data/
 vdjdb_csv/
+mcpas_data/
 processed/
 
 # Logs
