@@ -218,7 +218,7 @@ def main() -> int:
     negatives.to_csv(args.out_negatives, index=False)
     print(f"\nNegatives written to {args.out_negatives}")
 
-    shared_cols = [c for c in positives.columns if c in negatives.columns]
+    shared_cols = [c for c in positives.columns if c in negatives.columns and c != "label"]
     combined = pd.concat(
         [positives[shared_cols + ["label"]], negatives[shared_cols + ["label"]]],
         ignore_index=True,
