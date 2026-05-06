@@ -54,7 +54,7 @@ def load_iedb(iedb_csv: Path) -> pd.DataFrame:
 
 def load_mcpas(mcpas_csv: Path) -> pd.DataFrame:
     """Load the McPAS-TCR CSV export."""
-    return pd.read_csv(mcpas_csv, na_values=["NA"], keep_default_na=True, low_memory=False)
+    return pd.read_csv(mcpas_csv, na_values=["NA"], keep_default_na=True, low_memory=False, encoding="cp1252")
 
 
 def _normalize_text(df: pd.DataFrame, cols: list[str]) -> pd.DataFrame:
@@ -272,7 +272,7 @@ def main() -> int:
     ap.add_argument(
         "--mcpas-csv",
         type=Path,
-        default=Path("McPAS-TCR.csv"),
+        default=Path("mcpas_data/McPAS-TCR.csv"),
         help="path to the McPAS-TCR CSV export",
     )
     ap.add_argument(
