@@ -218,4 +218,7 @@ def get_full_aa_sequence(
                                     codon_dict, c_res, j_res, low_conf_js)
     if result is None:
         return None
-    return fxn.translate_nt("N" * result["translation_offset"] + result["stitched_nt"])
+    aa = fxn.translate_nt("N" * result["translation_offset"] + result["stitched_nt"])
+    if "*" in aa:
+        return None
+    return aa

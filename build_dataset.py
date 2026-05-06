@@ -1,8 +1,29 @@
 #!/usr/bin/env python3
 """Build cleaned TCR-peptide datasets from local VDJdb, IEDB, and McPAS exports.
 
-Use the notebook for exploratory cleaning and validation. Once the logic is
-stable, keep the final reproducible pipeline here.
+Outputs (written to processed/):
+    vdjdb_trb_clean.csv
+    iedb_trb_clean.csv
+    mcpas_trb_clean.csv
+    combined_trb_clean.csv   row-wise concat of the three sources, with a 'source' column
+
+All three sources apply a shared cleaning pipeline:
+  - Human / HomoSapiens rows only
+  - TRB chain only
+  - Drop rows with missing required fields (cdr3, v_gene, j_gene, peptide, mhc_a)
+  - Drop CDR3 or peptide sequences containing wildcard characters (X, *, ?)
+  - Standardise V/J gene names to IMGT allele format via tidytcells;
+    reject non-functional alleles (ORF, pseudogene) with enforce_functional=True —
+    these gene reference sequences can contain in-frame stop codons that corrupt
+    downstream sequence reconstruction via stitchr
+  - Deduplicate
+
+Source-specific additions:
+  VDJdb  — keep only rows with vdjdb.score >= 1 (at least one independent
+            verification beyond the original submission)
+  IEDB   — keep only rows associated with a high-confidence assay method
+            (multimer/tetramer, SPR, or x-ray crystallography) when
+            iedb_data/tcell_full_v3.csv is present
 """
 
 import argparse
@@ -138,11 +159,16 @@ def _standardize_genes(df: pd.DataFrame) -> pd.DataFrame:
     """Normalize v_gene and j_gene to IMGT allele-level names via tidytcells.
 
     Rows where standardization fails (biologically impossible genes, true
-    typos that survive preclean, cross-chain contamination) are dropped.
+    typos that survive preclean, cross-chain contamination, or ORF/pseudogene
+    annotations) are dropped. enforce_functional=True rejects ORF and
+    pseudogene alleles whose reference sequences can contain stop codons.
     """
     for col in ("v_gene", "j_gene"):
         df[col] = df[col].map(
-            lambda s: tt.tr.standardize(s, precision="allele", on_fail="reject", log_failures=False) if s else None
+            lambda s: tt.tr.standardize(
+                s, precision="allele", on_fail="reject", log_failures=False,
+                enforce_functional=True,
+            ) if s else None
         )
     return df.dropna(subset=["v_gene", "j_gene"]).copy()
 
@@ -213,7 +239,17 @@ def standardize_mcpas(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def clean_vdjdb(df: pd.DataFrame, chain: str) -> tuple[pd.DataFrame, dict[str, int]]:
-    """Apply the project cleaning rules."""
+    """Clean a raw VDJdb table to the project standard schema.
+
+    Filters applied in order:
+      1. HomoSapiens only
+      2. Requested chain (default TRB)
+      3. Drop rows missing any required field
+      4. Drop CDR3 / peptide sequences containing X, *, or ?
+      5. vdjdb.score >= 1 (at least one independent verification method)
+      6. Standardise V/J to IMGT allele names; drop non-functional alleles
+      7. Deduplicate
+    """
     stats: dict[str, int] = {"loaded_rows": len(df)}
     cleaned = df.copy()
     cleaned = _normalize_text(cleaned, VDJDB_REQUIRED_COLUMNS)
@@ -307,7 +343,18 @@ def clean_iedb(
 
 
 def clean_mcpas(df: pd.DataFrame) -> tuple[pd.DataFrame, dict[str, int]]:
-    """Apply the project cleaning rules to McPAS-TCR rows."""
+    """Clean a raw McPAS-TCR table to the project standard schema.
+
+    Filters applied in order:
+      1. Human only
+      2. Drop rows missing any required field
+      3. Drop CDR3 / peptide sequences containing X, *, or ?
+      4. Standardise V/J to IMGT allele names; drop non-functional alleles
+      5. Deduplicate
+
+    No assay-confidence filter is applied: McPAS's identification method
+    field uses an opaque numeric codebook with no confirmed legend.
+    """
     stats: dict[str, int] = {"loaded_rows": len(df)}
     cleaned = df.copy()
 
@@ -322,9 +369,6 @@ def clean_mcpas(df: pd.DataFrame) -> tuple[pd.DataFrame, dict[str, int]]:
 
     standardized = _drop_wildcards(standardized, "cdr3", "peptide")
     stats["after_wildcards"] = len(standardized)
-
-    # Antigen.identification.method uses an opaque numeric codebook; filtering
-    # without a confirmed legend risks silently dropping valid data.
 
     standardized = _preclean_genes(standardized)
     standardized = _standardize_genes(standardized)
@@ -347,7 +391,7 @@ def print_stats(label: str, stats: dict[str, int]) -> None:
     print(f"After required-field filter:    {stats['after_required_fields']:,}")
     print(f"After wildcard filter:          {stats['after_wildcards']:,}")
     if "after_gene_standardization" in stats:
-        print(f"After gene standardization:     {stats['after_gene_standardization']:,}")
+        print(f"After gene std + functional:    {stats['after_gene_standardization']:,}")
     print(f"After de-duplication:           {stats['after_dedup']:,}")
 
 
