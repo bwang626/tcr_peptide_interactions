@@ -6,9 +6,12 @@ stable, keep the final reproducible pipeline here.
 """
 
 import argparse
+import re
 from pathlib import Path
+from typing import cast
 
 import pandas as pd
+import tidytcells as tt
 
 VDJDB_REQUIRED_COLUMNS = [
     "gene",
@@ -52,6 +55,31 @@ def load_iedb(iedb_csv: Path) -> pd.DataFrame:
     return pd.read_csv(iedb_csv, header=[0, 1], low_memory=False)
 
 
+def load_iedb_methods(tcell_csv: Path) -> dict[tuple[str, str], frozenset[str]]:
+    """Build an (epitope_iri, reference_iri) -> assay_methods lookup from the tcell export.
+
+    The TCR export and tcell export share Epitope and Reference IRIs, making them
+    joinable to recover the assay method (multimer/tetramer, ELISPOT, etc.) that
+    is absent from the TCR-specific file.
+    """
+    df = pd.read_csv(tcell_csv, header=[0, 1], low_memory=False)
+
+    def _norm(s: pd.Series) -> pd.Series:
+        return s.fillna("").astype(str).str.replace("https://", "http://", regex=False).str.strip()
+
+    flat = pd.DataFrame({
+        "epi": _norm(df[("Epitope", "IEDB IRI")]),
+        "ref": _norm(df[("Reference", "IEDB IRI")]),
+        "method": df[("Assay", "Method")],
+    })
+    return cast(
+        dict[tuple[str, str], frozenset[str]],
+        flat.groupby(["epi", "ref"])["method"]
+        .apply(lambda x: frozenset(x.dropna()))
+        .to_dict(),
+    )
+
+
 def load_mcpas(mcpas_csv: Path) -> pd.DataFrame:
     """Load the McPAS-TCR CSV export."""
     return pd.read_csv(mcpas_csv, na_values=["NA"], keep_default_na=True, low_memory=False, encoding="cp1252")
@@ -77,11 +105,47 @@ def _drop_wildcards(df: pd.DataFrame, cdr3_col: str, peptide_col: str) -> pd.Dat
     return df[mask].copy()
 
 
-def _drop_multi_peptide_tcrs(df: pd.DataFrame, tcr_key: list[str], peptide_col: str) -> pd.DataFrame:
-    peptide_counts = df.groupby(tcr_key)[peptide_col].nunique()
-    valid_keys = peptide_counts[peptide_counts == 1].index
-    keep_mask = df.set_index(tcr_key).index.isin(valid_keys)
-    return df[keep_mask].copy()
+_COLON_ALLELE = re.compile(r":(\d)")
+_AMBIGUOUS_SPLIT = re.compile(r"(?i)/.*|\s+or\s+.*")
+
+
+def _preclean_gene_symbol(s: str) -> str:
+    """Normalise a raw gene symbol string before passing it to tidytcells.
+
+    Handles three fixable classes:
+      - Colon-as-allele-separator  (TRBV1-4:01  → TRBV1-4*01)
+      - Ambiguous slash calls       (TRBV12-3/4  → TRBV12-3)
+      - "or"-separated ambiguity    (TCRBV3-1 or TCRBV3-2 → TCRBV3-1)
+    Cross-chain contamination (TRBV29/DV5) becomes TRBV29 after slash
+    stripping, which tidytcells then rejects as non-existent.
+    Biologically impossible J-genes and true typos are left for tidytcells
+    to reject via on_fail="reject".
+    """
+    if not s:
+        return s
+    s = _COLON_ALLELE.sub(r"*\1", s)
+    s = _AMBIGUOUS_SPLIT.sub("", s).strip()
+    return s
+
+
+def _preclean_genes(df: pd.DataFrame) -> pd.DataFrame:
+    for col in ("v_gene", "j_gene"):
+        df[col] = df[col].map(_preclean_gene_symbol)
+    return df
+
+
+def _standardize_genes(df: pd.DataFrame) -> pd.DataFrame:
+    """Normalize v_gene and j_gene to IMGT allele-level names via tidytcells.
+
+    Rows where standardization fails (biologically impossible genes, true
+    typos that survive preclean, cross-chain contamination) are dropped.
+    """
+    for col in ("v_gene", "j_gene"):
+        df[col] = df[col].map(
+            lambda s: tt.tr.standardize(s, precision="allele", on_fail="reject", log_failures=False) if s else None
+        )
+    return df.dropna(subset=["v_gene", "j_gene"]).copy()
+
 
 
 def _infer_mhc_class_from_alleles(alleles: pd.Series) -> pd.Series:
@@ -166,31 +230,63 @@ def clean_vdjdb(df: pd.DataFrame, chain: str) -> tuple[pd.DataFrame, dict[str, i
     cleaned = _drop_wildcards(cleaned, "cdr3", "antigen.epitope")
     stats["after_wildcards"] = len(cleaned)
 
-    cleaned = _drop_multi_peptide_tcrs(cleaned, ["gene", "cdr3", "v.segm", "j.segm"], "antigen.epitope")
-    stats["after_multi_peptide_filter"] = len(cleaned)
+    # Keep only annotations backed by at least one independent verification method
+    # (score 0 = single low-confidence assay; 1-3 = progressively more evidence).
+    if "vdjdb.score" in cleaned.columns:
+        cleaned = cleaned[cleaned["vdjdb.score"].ge(1)].copy()
+    stats["after_confidence_filter"] = len(cleaned)
 
-    cleaned = cleaned.drop_duplicates(
-        subset=["cdr3", "gene", "v.segm", "j.segm", "antigen.epitope", "mhc.a", "mhc.b", "mhc.class"]
-    ).copy()
-    stats["after_dedup"] = len(cleaned)
+    standardized = standardize_vdjdb(cleaned)
+    standardized = _preclean_genes(standardized)
+    standardized = _standardize_genes(standardized)
+    stats["after_gene_standardization"] = len(standardized)
+    standardized = standardized.drop_duplicates(subset=STANDARD_COLUMNS).copy()
+    stats["after_dedup"] = len(standardized)
+    return standardized, stats
 
-    return standardize_vdjdb(cleaned), stats
+
+IEDB_HIGH_CONF_METHODS: frozenset[str] = frozenset({
+    "multimer/tetramer",
+    "surface plasmon resonance (SPR)",
+    "x-ray crystallography",
+})
 
 
-def clean_iedb(df: pd.DataFrame) -> tuple[pd.DataFrame, dict[str, int]]:
-    """Apply the project cleaning rules to IEDB TCR export rows."""
+def clean_iedb(
+    df: pd.DataFrame,
+    method_map: dict[tuple[str, str], frozenset[str]] | None = None,
+) -> tuple[pd.DataFrame, dict[str, int]]:
+    """Apply the project cleaning rules to IEDB TCR export rows.
+
+    method_map: optional output of load_iedb_methods(). When provided, only
+    rows associated with a high-confidence assay (multimer/tetramer, SPR, or
+    x-ray crystallography) are kept.
+    """
     stats: dict[str, int] = {"loaded_rows": len(df)}
     cleaned = df.copy()
+
+    cleaned = cleaned[
+        cleaned[("Chain 2", "Organism IRI")].fillna("").astype(str).str.contains("NCBITaxon_9606", na=False)
+    ].copy()
+    stats["after_species"] = len(cleaned)
 
     cleaned = cleaned[
         cleaned[("Chain 2", "Type")].fillna("").astype(str).str.strip().eq("beta")
     ].copy()
     stats["after_chain"] = len(cleaned)
 
-    cleaned = cleaned[
-        cleaned[("Chain 2", "Organism IRI")].fillna("").astype(str).str.contains("NCBITaxon_9606", na=False)
-    ].copy()
-    stats["after_species"] = len(cleaned)
+    if method_map is not None:
+        def _norm(s: pd.Series) -> pd.Series:
+            return s.fillna("").astype(str).str.replace("https://", "http://", regex=False).str.strip()
+
+        epi = _norm(cleaned[("Epitope", "IEDB IRI")])
+        ref = _norm(cleaned[("Reference", "IEDB IRI")])
+        mask = [
+            bool(method_map.get((e, r), frozenset()) & IEDB_HIGH_CONF_METHODS)
+            for e, r in zip(epi, ref)
+        ]
+        cleaned = cleaned[mask].copy()
+        stats["after_confidence_filter"] = len(cleaned)
 
     standardized = standardize_iedb(cleaned)
     standardized = _normalize_text(standardized, STANDARD_COLUMNS)
@@ -201,9 +297,9 @@ def clean_iedb(df: pd.DataFrame) -> tuple[pd.DataFrame, dict[str, int]]:
     standardized = _drop_wildcards(standardized, "cdr3", "peptide")
     stats["after_wildcards"] = len(standardized)
 
-    standardized = _drop_multi_peptide_tcrs(standardized, ["tcr_chain", "cdr3", "v_gene", "j_gene"], "peptide")
-    stats["after_multi_peptide_filter"] = len(standardized)
-
+    standardized = _preclean_genes(standardized)
+    standardized = _standardize_genes(standardized)
+    stats["after_gene_standardization"] = len(standardized)
     standardized = standardized.drop_duplicates(subset=STANDARD_COLUMNS).copy()
     stats["after_dedup"] = len(standardized)
 
@@ -227,9 +323,12 @@ def clean_mcpas(df: pd.DataFrame) -> tuple[pd.DataFrame, dict[str, int]]:
     standardized = _drop_wildcards(standardized, "cdr3", "peptide")
     stats["after_wildcards"] = len(standardized)
 
-    standardized = _drop_multi_peptide_tcrs(standardized, ["tcr_chain", "cdr3", "v_gene", "j_gene"], "peptide")
-    stats["after_multi_peptide_filter"] = len(standardized)
+    # Antigen.identification.method uses an opaque numeric codebook; filtering
+    # without a confirmed legend risks silently dropping valid data.
 
+    standardized = _preclean_genes(standardized)
+    standardized = _standardize_genes(standardized)
+    stats["after_gene_standardization"] = len(standardized)
     standardized = standardized.drop_duplicates(subset=STANDARD_COLUMNS).copy()
     stats["after_dedup"] = len(standardized)
 
@@ -243,9 +342,12 @@ def print_stats(label: str, stats: dict[str, int]) -> None:
         print(f"After Homo sapiens filter:      {stats['after_species']:,}")
     if "after_chain" in stats:
         print(f"After chain filter:             {stats['after_chain']:,}")
+    if "after_confidence_filter" in stats:
+        print(f"After confidence filter:        {stats['after_confidence_filter']:,}")
     print(f"After required-field filter:    {stats['after_required_fields']:,}")
     print(f"After wildcard filter:          {stats['after_wildcards']:,}")
-    print(f"After multi-peptide TCR filter: {stats['after_multi_peptide_filter']:,}")
+    if "after_gene_standardization" in stats:
+        print(f"After gene standardization:     {stats['after_gene_standardization']:,}")
     print(f"After de-duplication:           {stats['after_dedup']:,}")
 
 
@@ -262,6 +364,12 @@ def main() -> int:
         type=Path,
         default=Path("iedb_data/tcr_full_v3.csv"),
         help="path to the IEDB TCR CSV export",
+    )
+    ap.add_argument(
+        "--iedb-tcell-csv",
+        type=Path,
+        default=Path("iedb_data/tcell_full_v3.csv"),
+        help="path to the IEDB full T cell assay export (used for assay-method confidence filter)",
     )
     ap.add_argument(
         "--chain",
@@ -306,7 +414,10 @@ def main() -> int:
     vdjdb_clean = vdjdb_clean.assign(source="VDJdb")
 
     iedb_df = load_iedb(args.iedb_csv)
-    iedb_clean, iedb_stats = clean_iedb(iedb_df)
+    iedb_method_map = load_iedb_methods(args.iedb_tcell_csv) if args.iedb_tcell_csv.exists() else None
+    if iedb_method_map is None:
+        print(f"Warning: {args.iedb_tcell_csv} not found — skipping IEDB confidence filter.")
+    iedb_clean, iedb_stats = clean_iedb(iedb_df, method_map=iedb_method_map)
     iedb_clean = iedb_clean.assign(source="IEDB")
 
     mcpas_df = load_mcpas(args.mcpas_csv)
