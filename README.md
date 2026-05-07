@@ -205,7 +205,6 @@ The VDJdb path applies these filters to `vdjdb_csv/vdjdb.csv`:
 - keep only the requested TCR chain (`TRB` by default)
 - require non-empty TCR, peptide, HLA, and V/J fields
 - drop TCR or peptide sequences containing wildcard characters `X`, `*`, or `?`
-- drop TCRs that map to more than one distinct peptide
 - standardise V/J gene names to IMGT allele format via `tidytcells`; reject non-functional (ORF, pseudogene) alleles
 - drop duplicate rows after filtering
 
@@ -233,6 +232,8 @@ The McPAS path applies these filters to `McPAS-TCR.csv`:
 The combined output is a row-wise concatenation of the cleaned VDJdb, IEDB, and McPAS datasets, with `source` set to `VDJdb`, `IEDB`, or `McPAS`.
 
 > **Gene quality filter:** all three sources apply `enforce_functional=True` during V/J standardisation. This rejects IMGT genes annotated as ORF or pseudogene, whose reference nucleotide sequences can contain in-frame stop codons. Approximately 3 % of rows are dropped by this filter (~2 579 / 81 977 in the current combined dataset), dominated by TRBV12-1, TRBV21-1, and TRBV23-1.
+
+> **Promiscuous TCRs:** the current combined dataset contains 4,806 CDR3 sequences (8.51 %) that appear paired with more than one distinct peptide, accounting for 15,022 rows. These cross-reactive TCRs are **retained by default** because cross-reactivity is real biology. Pass `--drop_promiscuous` to `build_dataset.py` to remove all rows for any CDR3 that maps to more than one peptide — useful when training a classifier that requires a single unambiguous label per sequence.
 
 Sources:
 - IEDB: https://www.iedb.org/database_export_v3.php

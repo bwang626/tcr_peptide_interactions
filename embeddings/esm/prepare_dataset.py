@@ -136,7 +136,22 @@ def main() -> None:
     # Drop rows where stitching failed entirely
     before = len(df)
     df = df.dropna(subset=["full_aa"]).reset_index(drop=True)
-    print(f"Stitching failures dropped : {stitch_fails} ({stitch_fails/before*100:.2f}%)")
+    failure_pct = stitch_fails / before * 100
+    print(f"Stitching failures dropped : {stitch_fails} ({failure_pct:.2f}%)")
+
+    if failure_pct > 50:
+        print(
+            "\nWARNING: >50% of sequences failed stitching. If running on a new machine,\n"
+            "stitchr's IMGT reference data may not have been downloaded. Fix with:\n"
+            "  python -c \"from Stitchr import stitchrfunctions as fxn; "
+            "fxn.get_ref_data('TRB', list(fxn.regions.values()), 'HUMAN')\"\n"
+            "or check the stitchr docs: https://github.com/JamieHeather/stitchr"
+        )
+    if len(df) == 0:
+        raise RuntimeError(
+            "No sequences survived stitching — output would be empty. "
+            "See the warning above for likely cause."
+        )
 
     if span_misses:
         print(f"CDR3 span not found in    : {span_misses} sequences (span set to None)")
