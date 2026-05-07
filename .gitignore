@@ -22,3 +22,7 @@ outputs/
 # vscode
 .vscode/
 .DS_Store
+
+# venv (Jeff, IDK how python environment management works :()
+.venv
+.claude
