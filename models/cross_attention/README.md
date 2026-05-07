@@ -86,21 +86,32 @@ model.load_state_dict(ckpt["state_dict"])
 
 ## Training
 
+Data splitting and negative generation are handled upstream by a separate module. `train.py` expects pre-split, pre-labeled CSVs with columns `cdr3`, `peptide`, `label` (1 = binding, 0 = non-binding), and optionally `v_gene`, `j_gene`, `mhc_class` when using metadata.
+
 ```bash
 # from repo root
-python -m models.cross_attention.train                                   # defaults
-python -m models.cross_attention.train --use_metadata                               # one-hot V/J + MHC (default)
-python -m models.cross_attention.train --use_metadata --metadata_type cat_ae        # dense AE latents
-python -m models.cross_attention.train --d_model 128 --n_layers 3        # larger model
-python -m models.cross_attention.train --max_samples 5000 --epochs 10    # quick CPU test
-```
+python -m models.cross_attention.train \
+    --train data/train.csv --val data/val.csv
 
-Negatives are generated on-the-fly each epoch by shuffling peptides across TCRs (same approach as the graph embedder). Each positive pair gets one shuffled-peptide negative → 1:1 ratio, BCE loss.
+python -m models.cross_attention.train \
+    --train data/train.csv --val data/val.csv \
+    --use_metadata                              # one-hot V/J + MHC (default)
+
+python -m models.cross_attention.train \
+    --train data/train.csv --val data/val.csv \
+    --use_metadata --metadata_type cat_ae       # dense AE latents
+
+python -m models.cross_attention.train \
+    --train data/train.csv --val data/val.csv \
+    --d_model 128 --n_layers 3                  # larger model
+```
 
 **Key arguments:**
 
 | Argument | Default | Notes |
 |---|---|---|
+| `--train` | required | CSV with cdr3, peptide, label (+ optional metadata cols) |
+| `--val` | required | Same format as --train |
 | `--d_model` | 64 | Residue embedding dim; n_heads must divide it |
 | `--n_heads` | 4 | Attention heads per block |
 | `--n_layers` | 2 | Number of CrossAttentionBlocks |
