@@ -3,6 +3,12 @@
 
 IEDB publishes full database exports at iedb.org/database_export_v3.php.
 This script streams each zip to disk, then extracts the CSVs.
+
+By default only the two files used by build_dataset.py are downloaded:
+  tcr    — TCR receptor sequences (tcr_full_v3.csv)
+  tcell  — T cell assay methods, joined for confidence filtering (tcell_full_v3.csv)
+
+Use --only to fetch other exports if needed (see EXPORTS below for all keys).
 """
 
 import argparse
@@ -13,7 +19,7 @@ from urllib.request import Request, urlopen
 
 BASE = "https://www.iedb.org/downloader.php?file_name=doc/"
 
-# Canonical bulk exports. Sizes are approximate (zipped).
+# All available bulk exports. Only "tcr" and "tcell" are used by this pipeline.
 EXPORTS = {
     "epitope":      ("epitope_full_v3.zip",                  "all epitopes"),
     "tcell":        ("tcell_full_v3.zip",                    "T cell assays"),
@@ -139,7 +145,7 @@ def main() -> int:
     )
     args = ap.parse_args()
 
-    keys = args.only or list(EXPORTS)
+    keys = args.only or ["tcr", "tcell"]
     args.out.mkdir(parents=True, exist_ok=True)
     zip_dir = args.out / "_zips"
     zip_dir.mkdir(exist_ok=True)

@@ -1,23 +1,35 @@
 """
 Generate and save ESMplusplus embeddings for the TCR-peptide dataset.
 
-Reads processed/esm_trb_dataset.csv, passes each full-length mature TRB
-amino acid sequence through ESMplusplus, extracts per-residue hidden states
-from a chosen transformer layer, and mean- or max-pools them over two spans:
+Reads processed/esm_trb_dataset.csv, passes sequences through ESMplusplus,
+extracts per-residue hidden states from independently chosen transformer
+layers, and mean- or max-pools them.
 
-  full_emb  — entire mature sequence (V through C constant region).
+TCR embeddings (two spans per row):
+  full_emb  — entire mature TRB sequence (V through C constant region).
   cdr3_emb  — CDR3 residues only (positions cdr3_start:cdr3_end).
+
+Peptide embeddings:
+  peptide_emb — pooled over all residues of the epitope sequence.
+                Unique peptides are embedded once and mapped to all rows,
+                so compute cost scales with the number of distinct epitopes
+                (~100-200), not the dataset size.
+
+TCR and peptide layers are specified independently; both default to the
+final (normed) layer.
 
 Run from the repo root:
     python embeddings/esm/generate_embeddings.py
     python embeddings/esm/generate_embeddings.py --pooling max
-    python embeddings/esm/generate_embeddings.py --layer 24
+    python embeddings/esm/generate_embeddings.py --tcr_layer 24
+    python embeddings/esm/generate_embeddings.py --tcr_layer 30 --peptide_layer 24
     python embeddings/esm/generate_embeddings.py --limit 100   # quick test
 
 Outputs (outputs/embeddings/esm/):
-    full_embeddings.npy      float32  (N, D)  Full-sequence pooled embeddings.
-    cdr3_embeddings.npy      float32  (N, D)  CDR3-region pooled embeddings.
+    full_embeddings.npy      float32  (N, D)  Full-sequence TCR embeddings.
+    cdr3_embeddings.npy      float32  (N, D)  CDR3-region TCR embeddings.
                                               Rows with missing CDR3 span are NaN.
+    peptide_embeddings.npy   float32  (N, D)  Peptide epitope embeddings.
     embedding_index.csv               (N,)    Row index + sequence metadata;
                                               integer index matches .npy row order.
 
@@ -46,6 +58,7 @@ DEFAULT_MODEL    = "Synthyra/ESMplusplus_large"
 DEFAULT_POOLING  = "mean"
 DEFAULT_BATCH    = 32
 BASE_OUT         = "outputs/embeddings/esm"
+DEFAULT_LAYER    = 24
 
 INDEX_COLS = ["full_aa", "cdr3", "cdr3_start", "cdr3_end", "v_gene", "j_gene",
               "peptide", "mhc_a", "mhc_class", "source"]
@@ -139,6 +152,37 @@ def _make_length_sorted_batches(df: pd.DataFrame, batch_size: int) -> list[list[
 # Per-batch embedding extraction
 # ---------------------------------------------------------------------------
 
+def _embed_peptides(
+    model,
+    tokenizer,
+    unique_seqs: list[str],
+    layer_idx: int,
+    pooling: str,
+    device: str,
+    bos_offset: int,
+    batch_size: int,
+) -> dict[str, np.ndarray]:
+    """Embed unique peptide sequences and return a seq → vector mapping.
+
+    Peptides are pooled over all residue tokens (no CDR3 span needed).
+    Unique sequences are embedded once; the caller maps them back to rows.
+    """
+    order = sorted(range(len(unique_seqs)), key=lambda i: len(unique_seqs[i]))
+    result: dict[str, np.ndarray] = {}
+
+    for start in range(0, len(order), batch_size):
+        batch = [unique_seqs[i] for i in order[start : start + batch_size]]
+        enc = tokenizer(batch, return_tensors="pt", padding=True).to(device)
+        with torch.no_grad():
+            out = model(**enc, output_hidden_states=True)
+        hidden = out.hidden_states[layer_idx]  # (B, L_padded, D)
+        for local_i, seq in enumerate(batch):
+            residues = hidden[local_i, bos_offset : bos_offset + len(seq), :]
+            result[seq] = _pool(residues, pooling).cpu().float().numpy()
+
+    return result
+
+
 def _embed_batch(
     model,
     tokenizer,
@@ -193,8 +237,10 @@ def parse_args():
     p.add_argument("--out",        default=BASE_OUT,
                    help="Output directory (default: outputs/embeddings/esm).")
     p.add_argument("--model",      default=DEFAULT_MODEL)
-    p.add_argument("--layer",      type=int, default=None,
-                   help="1-indexed transformer layer (default: final normed layer).")
+    p.add_argument("--tcr_layer",     type=int, default=DEFAULT_LAYER,
+                   help="1-indexed layer for TCR embeddings (default: final normed layer).")
+    p.add_argument("--peptide_layer", type=int, default=DEFAULT_LAYER,
+                   help="1-indexed layer for peptide embeddings (default: same as --tcr_layer).")
     p.add_argument("--pooling",    choices=["mean", "max"], default=DEFAULT_POOLING,
                    help="Pooling over the sequence dimension (default: mean).")
     p.add_argument("--batch_size", type=int, default=DEFAULT_BATCH)
@@ -214,19 +260,19 @@ def main():
     tokenizer  = model.tokenizer
     num_blocks = len(model.transformer.blocks)
     hidden_dim = model.embed.embedding_dim
-    layer_idx  = _resolve_layer(args.layer, num_blocks)
-    bos_offset = _detect_bos_offset(tokenizer)
+    tcr_layer_idx = _resolve_layer(args.tcr_layer, num_blocks)
+    pep_layer_idx = _resolve_layer(args.peptide_layer, num_blocks)
+    bos_offset    = _detect_bos_offset(tokenizer)
 
-    layer_label = (
-        f"final normed (index {layer_idx})"
-        if layer_idx == num_blocks
-        else f"block {layer_idx} pre-norm"
-    )
-    logger.info(f"  Blocks       : {num_blocks}")
-    logger.info(f"  Hidden dim   : {hidden_dim}")
-    logger.info(f"  Layer        : {layer_label}")
-    logger.info(f"  Pooling      : {args.pooling}")
-    logger.info(f"  BOS offset   : {bos_offset}")
+    def _layer_label(idx: int) -> str:
+        return f"final normed (index {idx})" if idx == num_blocks else f"block {idx} pre-norm"
+
+    logger.info(f"  Blocks         : {num_blocks}")
+    logger.info(f"  Hidden dim     : {hidden_dim}")
+    logger.info(f"  TCR layer      : {_layer_label(tcr_layer_idx)}")
+    logger.info(f"  Peptide layer  : {_layer_label(pep_layer_idx)}")
+    logger.info(f"  Pooling        : {args.pooling}")
+    logger.info(f"  BOS offset     : {bos_offset}")
 
     logger.info(f"Loading data from {args.data}")
     df = pd.read_csv(args.data, low_memory=False)
@@ -254,7 +300,7 @@ def main():
         ]
 
         full_batch, cdr3_batch = _embed_batch(
-            model, tokenizer, seqs, spans, layer_idx, args.pooling, device, bos_offset
+            model, tokenizer, seqs, spans, tcr_layer_idx, args.pooling, device, bos_offset
         )
 
         for local_i, global_i in enumerate(row_indices):
@@ -265,23 +311,46 @@ def main():
             n_done = min((b_idx + 1) * args.batch_size, len(df))
             logger.info(f"  Batch {b_idx + 1:>4}/{len(batches)}  ({n_done:>6,}/{len(df):,} sequences)")
 
+    # ── Peptide embeddings ────────────────────────────────────────────────────
+    unique_peptides = df["peptide"].dropna().unique().tolist()
+    logger.info(
+        f"Embedding {len(unique_peptides)} unique peptides "
+        f"(layer: {_layer_label(pep_layer_idx)}) ..."
+    )
+    pep_map = _embed_peptides(
+        model, tokenizer, unique_peptides,
+        pep_layer_idx, args.pooling, device, bos_offset, args.batch_size,
+    )
+
+    pep_embs = np.full((len(df), hidden_dim), np.nan, dtype=np.float32)
+    for i, pep in enumerate(df["peptide"]):
+        if pd.notna(pep) and pep in pep_map:
+            pep_embs[i] = pep_map[pep]
+
+    pep_valid = (~np.isnan(pep_embs[:, 0])).sum()
+    logger.info(f"  {pep_valid:,} rows with peptide embedding ({len(df) - pep_valid:,} NaN — missing peptide)")
+
     # ── Write outputs ─────────────────────────────────────────────────────────
     os.makedirs(args.out, exist_ok=True)
 
-    np.save(os.path.join(args.out, "full_embeddings.npy"), full_embs)
-    np.save(os.path.join(args.out, "cdr3_embeddings.npy"), cdr3_embs)
+    np.save(os.path.join(args.out, "full_embeddings.npy"),    full_embs)
+    np.save(os.path.join(args.out, "cdr3_embeddings.npy"),    cdr3_embs)
+    np.save(os.path.join(args.out, "peptide_embeddings.npy"), pep_embs)
 
     index_cols = [c for c in INDEX_COLS if c in df.columns]
     df[index_cols].to_csv(os.path.join(args.out, "embedding_index.csv"), index=True)
 
     cdr3_valid = (~np.isnan(cdr3_embs[:, 0])).sum()
     logger.info(f"Outputs written to {args.out}")
-    logger.info(f"  full_embeddings.npy : {full_embs.shape}")
-    logger.info(f"  cdr3_embeddings.npy : {cdr3_embs.shape}  "
+    logger.info(f"  full_embeddings.npy    : {full_embs.shape}")
+    logger.info(f"  cdr3_embeddings.npy    : {cdr3_embs.shape}  "
                 f"({cdr3_valid:,} valid, {len(df) - cdr3_valid:,} NaN — missing CDR3 span)")
-    logger.info(f"  embedding_index.csv : {len(df):,} rows, columns={index_cols}")
-    logger.info(f"  Layer   : {layer_label}")
-    logger.info(f"  Pooling : {args.pooling}")
+    logger.info(f"  peptide_embeddings.npy : {pep_embs.shape}  "
+                f"({pep_valid:,} valid)")
+    logger.info(f"  embedding_index.csv    : {len(df):,} rows, columns={index_cols}")
+    logger.info(f"  TCR layer    : {_layer_label(tcr_layer_idx)}")
+    logger.info(f"  Peptide layer: {_layer_label(pep_layer_idx)}")
+    logger.info(f"  Pooling      : {args.pooling}")
 
 
 if __name__ == "__main__":
