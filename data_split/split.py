@@ -1,8 +1,15 @@
 """
-Split a labeled TCR-peptide dataset into train / val / test sets.
+Split a positives-only TCR-peptide dataset into train / val / test sets.
 
-Expects input from build_negatives.py (processed/combined_with_negatives_trb.csv),
-which already has a `label` column (1 = binding, 0 = non-binding).
+Expects input from build_dataset.py (processed/combined_trb_clean.csv),
+which has only positive pairs (no label column yet).
+
+After splitting, run build_negatives.py on each split separately to add
+negatives without cross-split leakage:
+
+    python build_negatives.py --input data/splits/train_pos.csv --out-combined data/splits/train.csv
+    python build_negatives.py --input data/splits/val_pos.csv   --out-combined data/splits/val.csv
+    python build_negatives.py --input data/splits/test_pos.csv  --out-combined data/splits/test.csv
 
 Three strategies (--strategy):
 
@@ -20,7 +27,6 @@ Three strategies (--strategy):
     Fastest but overly optimistic — test peptides leak into training.
 
 In all strategies, val is carved from the non-test portion only.
-Positive/negative ratio is preserved in each split via stratification.
 
 Run from repo root:
     python -m data_split.split                                        # peptide holdout, defaults
@@ -29,8 +35,8 @@ Run from repo root:
     python -m data_split.split --test_frac 0.15 --val_frac 0.1
 
 Outputs (--out directory):
-    train.csv   val.csv   test.csv
-    split_stats.txt       row counts and positive ratios per split
+    train_pos.csv   val_pos.csv   test_pos.csv
+    split_stats.txt               row counts and unique peptides/CDR3s per split
 """
 
 import argparse
@@ -44,17 +50,15 @@ from sklearn.model_selection import train_test_split
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
 
-OUTPUT_COLS = ["cdr3", "v_gene", "j_gene", "peptide", "mhc_a", "mhc_class", "source", "label"]
+OUTPUT_COLS = ["cdr3", "v_gene", "j_gene", "peptide", "mhc_a", "mhc_class", "source"]
 
 
 # ── split strategies ──────────────────────────────────────────────────────────
 
-def _stratified_split(df: pd.DataFrame, test_frac: float, seed: int
-                      ) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Simple stratified split preserving positive/negative ratio."""
-    train, test = train_test_split(
-        df, test_size=test_frac, stratify=df["label"], random_state=seed
-    )
+def _simple_split(df: pd.DataFrame, test_frac: float, seed: int
+                  ) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Simple random split (no label stratification — input is positives only)."""
+    train, test = train_test_split(df, test_size=test_frac, random_state=seed)
     return train.reset_index(drop=True), test.reset_index(drop=True)
 
 
@@ -75,11 +79,10 @@ def split_peptide_holdout(
     test_peps = set(rng.choice(unique_peps, size=n_test, replace=False))
     test_mask = df["peptide"].isin(test_peps)
 
-    df_test    = df[test_mask].reset_index(drop=True)
+    df_test     = df[test_mask].reset_index(drop=True)
     df_trainval = df[~test_mask].reset_index(drop=True)
 
-    # Val from the non-test portion, stratified by label
-    df_train, df_val = _stratified_split(df_trainval, val_frac, seed)
+    df_train, df_val = _simple_split(df_trainval, val_frac, seed)
 
     logger.info(f"  Peptide holdout: {n_test}/{len(unique_peps)} unique peptides → test")
     return df_train, df_val, df_test
@@ -104,7 +107,7 @@ def split_tcr_holdout(
     df_test     = df[test_mask].reset_index(drop=True)
     df_trainval = df[~test_mask].reset_index(drop=True)
 
-    df_train, df_val = _stratified_split(df_trainval, val_frac, seed)
+    df_train, df_val = _simple_split(df_trainval, val_frac, seed)
 
     logger.info(f"  TCR holdout: {n_test}/{len(unique_tcrs)} unique CDR3s → test")
     return df_train, df_val, df_test
@@ -113,25 +116,21 @@ def split_tcr_holdout(
 def split_random(
     df: pd.DataFrame, test_frac: float, val_frac: float, seed: int
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-    """Stratified random split — no sequence-level holdout."""
-    df_trainval, df_test = _stratified_split(df, test_frac, seed)
+    """Random split — no sequence-level holdout."""
+    df_trainval, df_test = _simple_split(df, test_frac, seed)
     # val_frac refers to fraction of the *full* dataset; rescale for the trainval portion
     val_frac_rescaled = val_frac / (1.0 - test_frac)
-    df_train, df_val = _stratified_split(df_trainval, val_frac_rescaled, seed)
+    df_train, df_val = _simple_split(df_trainval, val_frac_rescaled, seed)
     return df_train, df_val, df_test
 
 
 # ── reporting ─────────────────────────────────────────────────────────────────
 
 def _split_stats(name: str, df: pd.DataFrame) -> str:
-    n_pos = (df["label"] == 1).sum()
-    n_neg = (df["label"] == 0).sum()
-    ratio = n_neg / n_pos if n_pos else float("inf")
     unique_peps = df["peptide"].nunique()
     unique_tcrs = df["cdr3"].nunique()
     return (
-        f"{name:6s}  rows={len(df):>7,}  pos={n_pos:>6,}  neg={n_neg:>7,}  "
-        f"ratio=1:{ratio:.2f}  peptides={unique_peps:>4,}  CDR3s={unique_tcrs:>6,}"
+        f"{name:10s}  rows={len(df):>7,}  peptides={unique_peps:>4,}  CDR3s={unique_tcrs:>6,}"
     )
 
 
@@ -139,10 +138,10 @@ def _split_stats(name: str, df: pd.DataFrame) -> str:
 
 def parse_args():
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("--data", default="processed/combined_with_negatives_trb.csv",
-                   help="Labeled CSV from build_negatives.py (has 'label' column)")
+    p.add_argument("--data", default="processed/combined_trb_clean.csv",
+                   help="Positives-only CSV from build_dataset.py (default: processed/combined_trb_clean.csv)")
     p.add_argument("--out",  default="data/splits",
-                   help="Output directory for train.csv / val.csv / test.csv")
+                   help="Output directory for train_pos.csv / val_pos.csv / test_pos.csv")
     p.add_argument("--strategy", choices=["peptide_holdout", "tcr_holdout", "random"],
                    default="peptide_holdout",
                    help="Split strategy (default: peptide_holdout)")
@@ -159,9 +158,9 @@ def main():
 
     logger.info(f"Loading {args.data}")
     df = pd.read_csv(args.data, low_memory=False)
-    logger.info(f"  {len(df):,} rows  |  {(df['label']==1).sum():,} pos  {(df['label']==0).sum():,} neg")
+    logger.info(f"  {len(df):,} positive rows")
 
-    for col in ("cdr3", "peptide", "label"):
+    for col in ("cdr3", "peptide"):
         if col not in df.columns:
             raise ValueError(f"Input CSV missing required column '{col}'")
 
@@ -179,9 +178,9 @@ def main():
 
     out_dir = Path(args.out)
     out_dir.mkdir(parents=True, exist_ok=True)
-    df_train[out_cols].to_csv(out_dir / "train.csv", index=False)
-    df_val[out_cols].to_csv(out_dir / "val.csv",   index=False)
-    df_test[out_cols].to_csv(out_dir / "test.csv",  index=False)
+    df_train[out_cols].to_csv(out_dir / "train_pos.csv", index=False)
+    df_val[out_cols].to_csv(out_dir / "val_pos.csv",     index=False)
+    df_test[out_cols].to_csv(out_dir / "test_pos.csv",   index=False)
 
     # Stats report
     lines = [
@@ -190,15 +189,20 @@ def main():
         f"val_frac:   {args.val_frac}",
         f"seed:       {args.seed}",
         "",
-        _split_stats("train", df_train),
-        _split_stats("val",   df_val),
-        _split_stats("test",  df_test),
+        _split_stats("train_pos", df_train),
+        _split_stats("val_pos",   df_val),
+        _split_stats("test_pos",  df_test),
+        "",
+        "Next step: run build_negatives.py on each split:",
+        f"  python build_negatives.py --input {args.out}/train_pos.csv --out-combined {args.out}/train.csv",
+        f"  python build_negatives.py --input {args.out}/val_pos.csv   --out-combined {args.out}/val.csv",
+        f"  python build_negatives.py --input {args.out}/test_pos.csv  --out-combined {args.out}/test.csv",
     ]
     stats_text = "\n".join(lines)
     (out_dir / "split_stats.txt").write_text(stats_text + "\n")
 
     logger.info("\n" + stats_text)
-    logger.info(f"\nSplits written to {out_dir}/")
+    logger.info(f"\nPositive splits written to {out_dir}/")
 
 
 if __name__ == "__main__":

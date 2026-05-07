@@ -26,16 +26,9 @@ Outputs to `processed/`: `vdjdb_trb_clean.csv`, `iedb_trb_clean.csv`, `mcpas_trb
 Columns: `cdr3`, `v_gene`, `j_gene`, `peptide`, `mhc_a`, `mhc_b`, `mhc_class`, `source`.  
 V/J gene names are standardised to IMGT allele format via `tidytcells`.
 
-### Step 3 — generate negatives
+### Step 3 — split positives into train / val / test
 
-```bash
-python build_negatives.py
-```
-
-Adds synthetic non-binding pairs using Levenshtein-distance shuffling (IMMREP23 methodology).  
-Output: `processed/combined_with_negatives_trb.csv` — same schema as above plus a `label` column (1 = binding, 0 = non-binding).
-
-### Step 4 — split into train / val / test
+Split first so that each split's negatives are generated independently — this prevents test peptides from influencing the training negative pool.
 
 ```bash
 # recommended: hold out 20% of unique peptides for test (no test peptide leaks into train)
@@ -48,9 +41,21 @@ python -m data_split.split --strategy tcr_holdout
 python -m data_split.split --test_frac 0.15 --val_frac 0.1
 ```
 
-Outputs to `data/splits/`: `train.csv`, `val.csv`, `test.csv`, `split_stats.txt`.  
-Columns: `cdr3`, `v_gene`, `j_gene`, `peptide`, `mhc_a`, `mhc_class`, `source`, `label`.  
+Outputs to `data/splits/`: `train_pos.csv`, `val_pos.csv`, `test_pos.csv`, `split_stats.txt`.  
+Columns: `cdr3`, `v_gene`, `j_gene`, `peptide`, `mhc_a`, `mhc_class`, `source` (no label yet).  
 See `data_split/README.md` for full strategy descriptions.
+
+### Step 4 — generate negatives per split
+
+Run `build_negatives.py` independently on each split so each set's TCR swap pool is drawn only from within that split.
+
+```bash
+python build_negatives.py --input data/splits/train_pos.csv --out-combined data/splits/train.csv
+python build_negatives.py --input data/splits/val_pos.csv   --out-combined data/splits/val.csv
+python build_negatives.py --input data/splits/test_pos.csv  --out-combined data/splits/test.csv
+```
+
+Each output adds a `label` column (1 = binding, 0 = non-binding) at a ~1:5 positive-to-negative ratio using Levenshtein-distance shuffling (IMMREP23 methodology).
 
 ### Step 5 — generate embeddings
 
@@ -357,15 +362,20 @@ See `embeddings/feature_augment/README.md` for details.
 
 ## Data splitting
 
-Splits the labeled dataset (positives + negatives) into train / val / test with no sequence leakage between splits.
+Splits the positives-only dataset into train / val / test, then generates negatives per split to prevent leakage.
 
 ```bash
+# 1. split positives
 python -m data_split.split                                # peptide holdout (recommended)
 python -m data_split.split --strategy tcr_holdout         # TCR holdout
-python -m data_split.split --test_frac 0.15 --val_frac 0.1
+
+# 2. add negatives to each split
+python build_negatives.py --input data/splits/train_pos.csv --out-combined data/splits/train.csv
+python build_negatives.py --input data/splits/val_pos.csv   --out-combined data/splits/val.csv
+python build_negatives.py --input data/splits/test_pos.csv  --out-combined data/splits/test.csv
 ```
 
-Outputs: `data/splits/train.csv`, `val.csv`, `test.csv`, `split_stats.txt`. See `data_split/README.md`.
+Outputs: `data/splits/train.csv`, `val.csv`, `test.csv`. See `data_split/README.md`.
 
 ## Models
 
