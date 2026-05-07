@@ -1,9 +1,8 @@
 # Bulk data — regenerate with fetch_iedb.py / fetch_vdjdb.py / tsv_to_csv.py
 iedb_data/*
-!iedb_data/analyze_csv.ipynb
-vdjdb_data/
-vdjdb_csv/
-mcpas_data/
+vdjdb_data/*
+vdjdb_csv/*
+mcpas_data/*
 processed/
 
 # Logs
