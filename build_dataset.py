@@ -155,6 +155,19 @@ def _preclean_genes(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+def _drop_promiscuous_tcrs(df: pd.DataFrame) -> tuple[pd.DataFrame, int]:
+    """Drop all rows for any CDR3 that maps to more than one distinct peptide.
+
+    Cross-reactivity is real biology, so this filter is opt-in (--drop_promiscuous).
+    Applied to the combined dataset after merging all sources, so a CDR3 that
+    appears with two peptides across different databases is also caught.
+    """
+    pep_counts = df.groupby("cdr3")["peptide"].nunique()
+    promiscuous = pep_counts[pep_counts > 1].index
+    mask = df["cdr3"].isin(promiscuous)
+    return df[~mask].copy(), int(mask.sum())
+
+
 def _standardize_genes(df: pd.DataFrame) -> pd.DataFrame:
     """Normalize v_gene and j_gene to IMGT allele-level names via tidytcells.
 
@@ -451,6 +464,15 @@ def main() -> int:
         default=Path("processed/mcpas_trb_clean.csv"),
         help="output path for the cleaned McPAS dataset",
     )
+    ap.add_argument(
+        "--drop_promiscuous",
+        action="store_true",
+        default=False,
+        help=(
+            "drop all rows for any CDR3 that maps to more than one distinct peptide "
+            "in the combined dataset (default: keep — cross-reactivity is real biology)"
+        ),
+    )
     args = ap.parse_args()
 
     vdjdb_df = load_vdjdb(args.vdjdb_csv)
@@ -472,6 +494,10 @@ def main() -> int:
     combined = combined.drop_duplicates(
         subset=STANDARD_COLUMNS + ["source"]
     ).reset_index(drop=True)
+
+    if args.drop_promiscuous:
+        combined, n_dropped = _drop_promiscuous_tcrs(combined)
+        print(f"Promiscuous TCRs dropped:        {n_dropped:,} rows")
 
     for path in [args.vdjdb_out, args.iedb_out, args.mcpas_out, args.combined_out]:
         path.parent.mkdir(parents=True, exist_ok=True)
