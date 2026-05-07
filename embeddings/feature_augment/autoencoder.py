@@ -47,7 +47,7 @@ import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, TensorDataset
 
-from embeddings.feature_augment.one_hot import load_aligned_df
+from embeddings.feature_augment.one_hot import load_aligned_df, INDEX_COLS
 
 logger = logging.getLogger(__name__)
 
@@ -328,7 +328,10 @@ def main():
     augmented = aug.augment(embeddings, df)
     os.makedirs(os.path.dirname(args.out) or ".", exist_ok=True)
     np.save(args.out, augmented)
-    logger.info(f"Saved to {args.out}")
+
+    index_path = args.out.replace(".npy", "_index.csv")
+    df[[c for c in INDEX_COLS if c in df.columns]].to_csv(index_path, index=True)
+    logger.info(f"Saved to {args.out}  index → {index_path}")
 
     if args.augmenter_out:
         aug.save(args.augmenter_out)

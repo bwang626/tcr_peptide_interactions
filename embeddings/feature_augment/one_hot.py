@@ -36,6 +36,10 @@ logger = logging.getLogger(__name__)
 
 CATEGORICAL_FEATURES = ("v_gene", "j_gene")
 
+# Metadata columns written alongside augmented .npy files — matches ESM index schema
+# (minus full_aa / cdr3_start / cdr3_end which require stitchr reconstruction).
+INDEX_COLS = ["cdr3", "v_gene", "j_gene", "peptide", "mhc_a", "mhc_class", "source"]
+
 
 class OneHotFeatureAugmenter:
     """
@@ -43,10 +47,10 @@ class OneHotFeatureAugmenter:
 
     Features:
       - mhc_class : 1-bit binary (MHCI=0, MHCII=1)
-      - v_gene    : one-hot over training vocabulary  (default 588-dim)
-      - j_gene    : one-hot over training vocabulary  (default 152-dim)
+      - v_gene    : one-hot over training vocabulary  (134-dim on IMGT-standardized combined dataset)
+      - j_gene    : one-hot over training vocabulary  (29-dim on IMGT-standardized combined dataset)
 
-    Total feature dim: 741 (on the full dataset).
+    Total feature dim: 164 (on the full IMGT-standardized dataset).
     Unknown values at inference time produce an all-zero vector.
     """
 
@@ -146,13 +150,25 @@ def load_aligned_df(embeddings_path: str, index_path: str, data_path: str):
 
     full = pd.read_csv(data_path, low_memory=False)
     meta_cols = [c for c in ["cdr3", "peptide", "v_gene", "j_gene", "mhc_class"] if c in full.columns]
-    df = index.merge(
-        full[meta_cols].drop_duplicates(subset=["cdr3", "peptide"]),
-        on=["cdr3", "peptide"],
-        how="left",
-    )
+
+    # The embedding scripts save the index with index=True, preserving the original
+    # DataFrame row labels. Use them for a direct positional lookup so each embedding
+    # row gets the exact V/J genes it was generated from — a key-based merge on
+    # (cdr3, peptide) alone would assign wrong V/J to the ~19% of pairs that appear
+    # with multiple V/J genes in the dataset.
+    # Falls back to key-based merge when indices exceed the data file length
+    # (e.g. --max_samples runs that reset_index before saving).
+    if index.index.max() < len(full):
+        df = full.loc[index.index, meta_cols].reset_index(drop=True)
+    else:
+        df = index.merge(
+            full[meta_cols].drop_duplicates(subset=["cdr3", "peptide"]),
+            on=["cdr3", "peptide"],
+            how="left",
+        )
+
     if len(df) != len(embeddings):
-        raise ValueError(f"After merge got {len(df)} rows, expected {len(embeddings)}")
+        raise ValueError(f"After lookup got {len(df)} rows, expected {len(embeddings)}")
     return embeddings, df
 
 
@@ -181,7 +197,10 @@ def main():
     augmented = aug.augment(embeddings, df)
     os.makedirs(os.path.dirname(args.out) or ".", exist_ok=True)
     np.save(args.out, augmented)
-    logger.info(f"Saved to {args.out}")
+
+    index_path = args.out.replace(".npy", "_index.csv")
+    df[[c for c in INDEX_COLS if c in df.columns]].to_csv(index_path, index=True)
+    logger.info(f"Saved to {args.out}  index → {index_path}")
 
     if args.augmenter_out:
         aug.save(args.augmenter_out)

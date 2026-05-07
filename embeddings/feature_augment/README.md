@@ -20,7 +20,7 @@ Sequence encoders (one-hot, autoencoder, graph, ESM2) only see CDR3 and peptide 
 
 Encodes v_gene and j_gene as raw one-hot vectors. Fast, no training required.
 
-- Feature dim: **741** (1 + 588 + 152 on full dataset)
+- Feature dim: **164** (1 + 134 + 29 on the IMGT-standardized combined dataset)
 - v_gene and j_gene treated as fully independent — no similarity structure
 
 ### `CatAEFeatureAugmenter` — learned compression (PepTCR-style)
@@ -73,6 +73,15 @@ python -m embeddings.feature_augment.autoencoder \
     --augmenter_out outputs/feature_augment/cat_ae/ \
     --latent_dim 32 --epochs 100
 ```
+
+Each CLI run writes two output files:
+
+| File | Contents |
+|---|---|
+| `<out>.npy` | Augmented embedding array `(N, d + feature_dim)` |
+| `<out>_index.csv` | Row metadata: `cdr3, v_gene, j_gene, peptide, mhc_a, mhc_class, source` |
+
+The index schema matches the ESM embedding index, so downstream models can load any embedding method's output the same way.
 
 ## Where this fits in the pipeline
 
