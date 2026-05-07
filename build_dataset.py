@@ -103,7 +103,7 @@ def load_iedb_methods(tcell_csv: Path) -> dict[tuple[str, str], frozenset[str]]:
 
 def load_mcpas(mcpas_csv: Path) -> pd.DataFrame:
     """Load the McPAS-TCR CSV export."""
-    return pd.read_csv(mcpas_csv, na_values=["NA"], keep_default_na=True, low_memory=False, encoding="cp1252")
+    return pd.read_csv(mcpas_csv, na_values=["NA"], keep_default_na=True, low_memory=False)
 
 
 def _normalize_text(df: pd.DataFrame, cols: list[str]) -> pd.DataFrame:

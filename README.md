@@ -1,6 +1,145 @@
 # tcr_peptide_interactions
 
-Scripts for pulling and normalizing public TCR–peptide interaction data.
+TCR–peptide binding prediction: data collection, negative generation, splitting, embeddings, and model training.
+
+## Full pipeline (HPC training guide)
+
+Run these steps in order from the repo root. Each step's output is the next step's input.
+
+### Step 1 — fetch raw data
+
+```bash
+python fetch_iedb.py            # IEDB bulk exports  →  iedb_data/
+python fetch_vdjdb.py           # latest VDJdb release  →  vdjdb_data/
+python tsv_to_csv.py            # vdjdb_data/*.txt  →  vdjdb_csv/
+```
+
+McPAS-TCR must be downloaded manually from `https://friedmanlab.weizmann.ac.il/McPAS-TCR/` and placed at `./McPAS-TCR.csv`.
+
+### Step 2 — build cleaned dataset (positives only)
+
+```bash
+python build_dataset.py
+```
+
+Outputs to `processed/`: `vdjdb_trb_clean.csv`, `iedb_trb_clean.csv`, `mcpas_trb_clean.csv`, `combined_trb_clean.csv`.  
+Columns: `cdr3`, `v_gene`, `j_gene`, `peptide`, `mhc_a`, `mhc_b`, `mhc_class`, `source`.  
+V/J gene names are standardised to IMGT allele format via `tidytcells`.
+
+### Step 3 — split positives into train / val / test
+
+Split first so that each split's negatives are generated independently — this prevents test peptides from influencing the training negative pool.
+
+```bash
+# recommended: hold out 20% of unique peptides for test (no test peptide leaks into train)
+python -m data_split.split
+
+# alternative: hold out 20% of unique CDR3 sequences
+python -m data_split.split --strategy tcr_holdout
+
+# custom fractions
+python -m data_split.split --test_frac 0.15 --val_frac 0.1
+```
+
+Outputs to `data/splits/`: `train_pos.csv`, `val_pos.csv`, `test_pos.csv`, `split_stats.txt`.  
+Columns: `cdr3`, `v_gene`, `j_gene`, `peptide`, `mhc_a`, `mhc_class`, `source` (no label yet).  
+See `data_split/README.md` for full strategy descriptions.
+
+### Step 4 — generate negatives per split
+
+Run `build_negatives.py` independently on each split so each set's TCR swap pool is drawn only from within that split.
+
+```bash
+python build_negatives.py --input data/splits/train_pos.csv --out-combined data/splits/train.csv
+python build_negatives.py --input data/splits/val_pos.csv   --out-combined data/splits/val.csv
+python build_negatives.py --input data/splits/test_pos.csv  --out-combined data/splits/test.csv
+```
+
+Each output adds a `label` column (1 = binding, 0 = non-binding) at a ~1:5 positive-to-negative ratio using Levenshtein-distance shuffling (IMMREP23 methodology).
+
+### Step 5 — generate embeddings
+
+All embedding commands run from the repo root. Outputs go to `outputs/embeddings/` (gitignored).
+
+**One-hot** (no training, fast):
+```bash
+python -m embeddings.one_hot.embed
+```
+
+**Autoencoder** (Conv1D + BiGRU, ~10 min on CPU):
+```bash
+python embeddings/autoencoder/train.py           # plain AE
+python embeddings/autoencoder/train.py --vae     # variational AE
+```
+
+**Graph / R-GAT** (trains end-to-end on binding labels):
+```bash
+python embeddings/graph/train.py --epochs 30
+```
+
+**ESM** (480M protein language model — GPU strongly recommended):
+```bash
+python embeddings/esm/prepare_dataset.py         # reconstruct full TRBβ sequences (~5–10 min)
+python embeddings/esm/generate_embeddings.py     # mean-pool last layer
+```
+
+### Step 6 — feature augmentation (V/J gene + MHC class)
+
+Appends V gene, J gene, and MHC class metadata to one-hot or autoencoder embeddings. Two encoders available:
+
+```bash
+# one-hot augmentation of one-hot sequence embeddings
+python -m embeddings.feature_augment.one_hot \
+    --embeddings outputs/embeddings/one_hot/combined_embeddings.npy \
+    --index      outputs/embeddings/one_hot/embedding_index.csv \
+    --data       processed/combined_trb_clean.csv \
+    --out        outputs/embeddings/one_hot/augmented_combined.npy
+
+# categorical-AE augmentation of autoencoder sequence embeddings
+python -m embeddings.feature_augment.autoencoder \
+    --embeddings outputs/embeddings/autoencoder/plain_ae/combined_embeddings.npy \
+    --index      outputs/embeddings/autoencoder/plain_ae/embedding_index.csv \
+    --data       processed/combined_trb_clean.csv \
+    --out        outputs/embeddings/autoencoder/plain_ae/augmented_combined.npy
+```
+
+Each run writes `augmented_combined.npy` (sequence + metadata features) and `augmented_combined_index.csv` (row provenance).  
+See `embeddings/feature_augment/README.md` for encoder dimensions and all options.
+
+### Step 7 — train the cross-attention model
+
+Takes pre-split labeled CSVs directly — no further splitting inside the training script.
+
+```bash
+# baseline: sequence-only
+python -m models.cross_attention.train \
+    --train data/splits/train.csv \
+    --val   data/splits/val.csv
+
+# with V/J + MHC metadata (one-hot encoder, +164 dim)
+python -m models.cross_attention.train \
+    --train data/splits/train.csv \
+    --val   data/splits/val.csv \
+    --use_metadata
+
+# with V/J + MHC metadata (categorical-AE encoder, +65 dim)
+python -m models.cross_attention.train \
+    --train data/splits/train.csv \
+    --val   data/splits/val.csv \
+    --use_metadata --metadata_type cat_ae
+
+# larger model
+python -m models.cross_attention.train \
+    --train data/splits/train.csv \
+    --val   data/splits/val.csv \
+    --d_model 128 --n_layers 3
+```
+
+Outputs to `outputs/models/cross_attention/`: `checkpoints/checkpoint.pt`, `metrics.txt`.  
+The test split (`data/splits/test.csv`) is **not** passed to training — evaluate separately after training.  
+See `models/cross_attention/README.md` for architecture details and all arguments.
+
+---
 
 ## Data
 
@@ -195,4 +334,65 @@ Outputs (in `outputs/embeddings/esm/`):
 | `embedding_index.csv` | row → sequence metadata | |
 
 A pre-built 100-sequence test set (`processed/esm_test_dataset.csv`) is included for smoke-testing without GPU access. See `embeddings/esm/README.md` for full details.
+
+### Feature augmentation (V/J gene + MHC class)
+
+Appends V gene, J gene, and MHC class metadata to existing one-hot or autoencoder embeddings. Two metadata encoders:
+
+| `--metadata_type` | Encoder | Dim added |
+|---|---|---|
+| `one_hot` (default) | `OneHotFeatureAugmenter` | 164 |
+| `cat_ae` | `CatAEFeatureAugmenter` | 65 |
+
+```bash
+python -m embeddings.feature_augment.one_hot \
+    --embeddings outputs/embeddings/one_hot/combined_embeddings.npy \
+    --index      outputs/embeddings/one_hot/embedding_index.csv \
+    --data       processed/combined_trb_clean.csv \
+    --out        outputs/embeddings/one_hot/augmented_combined.npy
+
+python -m embeddings.feature_augment.autoencoder \
+    --embeddings outputs/embeddings/autoencoder/plain_ae/combined_embeddings.npy \
+    --index      outputs/embeddings/autoencoder/plain_ae/embedding_index.csv \
+    --data       processed/combined_trb_clean.csv \
+    --out        outputs/embeddings/autoencoder/plain_ae/augmented_combined.npy
+```
+
+Each command writes `augmented_combined.npy` and a companion `augmented_combined_index.csv`.  
+See `embeddings/feature_augment/README.md` for details.
+
+## Data splitting
+
+Splits the positives-only dataset into train / val / test, then generates negatives per split to prevent leakage.
+
+```bash
+# 1. split positives
+python -m data_split.split                                # peptide holdout (recommended)
+python -m data_split.split --strategy tcr_holdout         # TCR holdout
+
+# 2. add negatives to each split
+python build_negatives.py --input data/splits/train_pos.csv --out-combined data/splits/train.csv
+python build_negatives.py --input data/splits/val_pos.csv   --out-combined data/splits/val.csv
+python build_negatives.py --input data/splits/test_pos.csv  --out-combined data/splits/test.csv
+```
+
+Outputs: `data/splits/train.csv`, `val.csv`, `test.csv`. See `data_split/README.md`.
+
+## Models
+
+### Cross-attention TCR-peptide binding predictor
+
+Pairwise cross-attention model: every TCR residue attends to every peptide residue at each layer. Takes raw amino acid sequences as input (not pre-computed embeddings). Optionally appends V/J gene + MHC class metadata.
+
+```bash
+python -m models.cross_attention.train \
+    --train data/splits/train.csv --val data/splits/val.csv
+
+python -m models.cross_attention.train \
+    --train data/splits/train.csv --val data/splits/val.csv \
+    --use_metadata --metadata_type cat_ae
+```
+
+Outputs: `outputs/models/cross_attention/checkpoints/checkpoint.pt`, `metrics.txt`.  
+See `models/cross_attention/README.md` for full architecture description and all training arguments.
 
