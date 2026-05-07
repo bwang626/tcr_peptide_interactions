@@ -4,7 +4,7 @@ End-to-end binding predictors that take pre-split labeled CSVs (`cdr3`, `peptide
 
 ## Feature augmentation (V/J gene + MHC class)
 
-All models can optionally consume V/J gene and MHC class as metadata. This encoding happens **inside the training script**, not at the `data_split` stage — both encoders must be fit on training data only to avoid leakage, and keeping it here makes that guarantee explicit. `data_split` simply preserves the raw `v_gene`, `j_gene`, `mhc_class` columns for the model to use.
+All models can optionally consume V/J gene and MHC class as metadata. This encoding happens **inside the training script**, not at the `data_split` stage. Both encoders must be fit on training data only to avoid leakage, and keeping it here makes that guarantee explicit. `data_split` simply preserves the raw `v_gene`, `j_gene`, `mhc_class` columns for the model to use.
 
 Two encoders are available (from `embeddings/feature_augment/`):
 
