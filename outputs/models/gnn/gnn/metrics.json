@@ -1,0 +1,14 @@
+{
+  "accuracy": 0.7081929469901168,
+  "auprc": 0.2899899730607691,
+  "auroc": 0.5064772760926379,
+  "best_val_auroc": 0.8760634676877693,
+  "experiment_name": "gnn",
+  "f1": 0.02950789055934261,
+  "feature_augment": "none",
+  "model_type": "gnn",
+  "n_params": 60770,
+  "n_test": 35616,
+  "n_train": 261118,
+  "n_val": 31109
+}

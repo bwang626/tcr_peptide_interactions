@@ -1,0 +1,17 @@
+{
+  "accuracy": 0.7270838013929454,
+  "auprc": 0.4393502893664748,
+  "auroc": 0.6148713656061535,
+  "best_val_auroc": 0.8947443749909969,
+  "embedding": "esm/cdr3",
+  "experiment_name": "esm_cdr3_aug-cat_ae",
+  "f1": 0.18308675184936113,
+  "feature_augment": "cat_ae",
+  "model_type": "cnn",
+  "n_params": 62657,
+  "n_test": 35608,
+  "n_train": 261093,
+  "n_val": 31109,
+  "peptide_embedding": "autoencoder/plain_ae",
+  "tcr_embedding": "esm/cdr3"
+}

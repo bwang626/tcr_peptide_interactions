@@ -1,0 +1,15 @@
+{
+  "accuracy": 0.6748371518418689,
+  "auprc": 0.31101110567850204,
+  "auroc": 0.5308968294413685,
+  "best_val_auroc": 0.94120821443871,
+  "embedding": "one_hot",
+  "experiment_name": "one_hot_aug-one_hot",
+  "f1": 0.1652130036762056,
+  "feature_augment": "one_hot",
+  "model_type": "cnn",
+  "n_params": 81729,
+  "n_test": 35616,
+  "n_train": 261118,
+  "n_val": 31109
+}

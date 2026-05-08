@@ -1,0 +1,18 @@
+{
+  "categorical": null,
+  "experiment_name": "onehot",
+  "input_dim": 990,
+  "metrics": {
+    "accuracy": 0.7158580413297394,
+    "auprc": 0.45406028660799236,
+    "auroc": 0.6385590621592567,
+    "f1": 0.026361362324417933
+  },
+  "model_type": "random_forest",
+  "n_test": 35616,
+  "n_train": 261118,
+  "n_train_combined": 292227,
+  "n_val": 31109,
+  "peptide_embedding": "one_hot",
+  "tcr_embedding": "one_hot"
+}

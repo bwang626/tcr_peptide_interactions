@@ -1,0 +1,18 @@
+{
+  "categorical": null,
+  "experiment_name": "vae",
+  "input_dim": 128,
+  "metrics": {
+    "accuracy": 0.7140891734052112,
+    "auprc": 0.5348048312963698,
+    "auroc": 0.696073532268083,
+    "f1": 0.01508849985491827
+  },
+  "model_type": "random_forest",
+  "n_test": 35616,
+  "n_train": 261118,
+  "n_train_combined": 292227,
+  "n_val": 31109,
+  "peptide_embedding": "autoencoder/vae",
+  "tcr_embedding": "autoencoder/vae"
+}

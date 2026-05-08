@@ -1,0 +1,18 @@
+{
+  "best_val_auroc": 0.8821824112645487,
+  "categorical": null,
+  "experiment_name": "onehot",
+  "input_dim": 990,
+  "metrics": {
+    "accuracy": 0.695838948787062,
+    "auprc": 0.3054411383053929,
+    "auroc": 0.5304017861435415,
+    "f1": 0.09035183474683013
+  },
+  "model_type": "mlp",
+  "n_test": 35616,
+  "n_train": 261118,
+  "n_val": 31109,
+  "peptide_embedding": "one_hot",
+  "tcr_embedding": "one_hot"
+}

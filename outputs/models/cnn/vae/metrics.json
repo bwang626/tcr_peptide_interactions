@@ -1,0 +1,15 @@
+{
+  "accuracy": 0.7125449236298292,
+  "auprc": 0.32301624937366724,
+  "auroc": 0.5297988915448565,
+  "best_val_auroc": 0.8232517208003681,
+  "embedding": "vae",
+  "experiment_name": "vae",
+  "f1": 0.015576923076923077,
+  "feature_augment": "none",
+  "model_type": "cnn",
+  "n_params": 58497,
+  "n_test": 35616,
+  "n_train": 261118,
+  "n_val": 31109
+}

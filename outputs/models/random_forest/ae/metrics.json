@@ -1,0 +1,18 @@
+{
+  "categorical": null,
+  "experiment_name": "ae",
+  "input_dim": 128,
+  "metrics": {
+    "accuracy": 0.7141172506738545,
+    "auprc": 0.3710064961748757,
+    "auroc": 0.6108448085876428,
+    "f1": 0.01489938080495356
+  },
+  "model_type": "random_forest",
+  "n_test": 35616,
+  "n_train": 261118,
+  "n_train_combined": 292227,
+  "n_val": 31109,
+  "peptide_embedding": "autoencoder/plain_ae",
+  "tcr_embedding": "autoencoder/plain_ae"
+}
