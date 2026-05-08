@@ -1,0 +1,17 @@
+{
+  "accuracy": 0.7077061334531566,
+  "auprc": 0.2775133451631149,
+  "auroc": 0.5040703737376162,
+  "best_val_auroc": 0.8406734493908632,
+  "embedding": "esm/full",
+  "experiment_name": "esm_full_aug-cat_ae",
+  "f1": 0.007249141549027089,
+  "feature_augment": "cat_ae",
+  "model_type": "cnn",
+  "n_params": 62657,
+  "n_test": 35608,
+  "n_train": 261093,
+  "n_val": 31109,
+  "peptide_embedding": "autoencoder/plain_ae",
+  "tcr_embedding": "esm/full"
+}

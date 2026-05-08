@@ -1,0 +1,18 @@
+{
+  "best_val_auroc": 0.8105016625372956,
+  "categorical": null,
+  "experiment_name": "vae",
+  "input_dim": 128,
+  "metrics": {
+    "accuracy": 0.7092318059299192,
+    "auprc": 0.3018840913709,
+    "auroc": 0.5469757962934829,
+    "f1": 0.020245979186376536
+  },
+  "model_type": "mlp",
+  "n_test": 35616,
+  "n_train": 261118,
+  "n_val": 31109,
+  "peptide_embedding": "autoencoder/vae",
+  "tcr_embedding": "autoencoder/vae"
+}

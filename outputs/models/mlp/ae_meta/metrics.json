@@ -1,0 +1,18 @@
+{
+  "best_val_auroc": 0.8852518575594446,
+  "categorical": "cat_ae",
+  "experiment_name": "ae_meta",
+  "input_dim": 193,
+  "metrics": {
+    "accuracy": 0.7060029200359389,
+    "auprc": 0.33610718154242697,
+    "auroc": 0.5768870371901701,
+    "f1": 0.04852339845524761
+  },
+  "model_type": "mlp",
+  "n_test": 35616,
+  "n_train": 261118,
+  "n_val": 31109,
+  "peptide_embedding": "autoencoder/plain_ae",
+  "tcr_embedding": "autoencoder/plain_ae"
+}

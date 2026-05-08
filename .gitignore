@@ -14,9 +14,12 @@ __pycache__/
 .ipynb_checkpoints/
 
 # outputs (large binary files - embeddings, checkpoints)
-outputs/
+outputs/embeddings/
+outputs/_logs/
+**/_logs/
 *.npy
 *.pt
+*.joblib
 
 # vscode
 .vscode/

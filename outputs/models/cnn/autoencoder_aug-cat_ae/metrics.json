@@ -1,0 +1,15 @@
+{
+  "accuracy": 0.7040375112309074,
+  "auprc": 0.3574573169268719,
+  "auroc": 0.5879648771257089,
+  "best_val_auroc": 0.9029806664626039,
+  "embedding": "autoencoder",
+  "experiment_name": "autoencoder_aug-cat_ae",
+  "f1": 0.02044419663600037,
+  "feature_augment": "cat_ae",
+  "model_type": "cnn",
+  "n_params": 62657,
+  "n_test": 35616,
+  "n_train": 261118,
+  "n_val": 31109
+}

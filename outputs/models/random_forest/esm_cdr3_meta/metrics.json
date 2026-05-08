@@ -1,0 +1,18 @@
+{
+  "categorical": "cat_ae",
+  "experiment_name": "esm_cdr3_meta",
+  "input_dim": 1281,
+  "metrics": {
+    "accuracy": 0.7146989440575152,
+    "auprc": 0.3948524278257686,
+    "auroc": 0.6082009596548192,
+    "f1": 0.019874577906415822
+  },
+  "model_type": "random_forest",
+  "n_test": 35608,
+  "n_train": 261093,
+  "n_train_combined": 292202,
+  "n_val": 31109,
+  "peptide_embedding": "autoencoder/plain_ae",
+  "tcr_embedding": "esm/cdr3"
+}

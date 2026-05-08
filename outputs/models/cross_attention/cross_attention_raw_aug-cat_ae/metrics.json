@@ -1,0 +1,15 @@
+{
+  "accuracy": 0.7387690925426774,
+  "auprc": 0.4784429243546855,
+  "auroc": 0.6501411972623234,
+  "best_val_auroc": 0.9293549502332644,
+  "experiment_name": "cross_attention_raw_aug-cat_ae",
+  "f1": 0.35523215523215523,
+  "metadata": "cat_ae",
+  "model_type": "cross_attention",
+  "n_params": 147393,
+  "n_test": 35616,
+  "n_train": 261118,
+  "n_val": 31109,
+  "tcr_input": "raw"
+}
