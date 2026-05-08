@@ -163,14 +163,20 @@ class CrossAttentionTCRPep(nn.Module):
         ff_dim:   int   = None,
         dropout:  float = 0.1,
         meta_dim: int   = 0,
+        tcr_feature_dim: int = 0,
     ):
         super().__init__()
         ff_dim = ff_dim or 4 * d_model
 
-        self.d_model  = d_model
-        self.meta_dim = meta_dim
+        self.d_model         = d_model
+        self.meta_dim        = meta_dim
+        self.tcr_feature_dim = tcr_feature_dim
 
         self.aa_embed = nn.Embedding(VOCAB_SIZE, d_model, padding_idx=AA_TO_IDX[PAD_TOKEN])
+        # When tcr_feature_dim > 0, the TCR side consumes pre-computed per-residue
+        # features (e.g. ESM hidden states) instead of looking up token IDs.
+        self.tcr_feature_proj = (nn.Linear(tcr_feature_dim, d_model)
+                                 if tcr_feature_dim > 0 else None)
         self.pe       = SinusoidalPE(d_model, max_len=max(TCR_MAX_LEN, PEP_MAX_LEN) + 4)
 
         self.layers = nn.ModuleList([
@@ -193,14 +199,17 @@ class CrossAttentionTCRPep(nn.Module):
 
     def encode(
         self,
-        tcr_idx:  torch.Tensor,   # (B, L_t)
+        tcr_input: torch.Tensor,  # (B, L_t) long token ids OR (B, L_t, F) float features
         pep_idx:  torch.Tensor,   # (B, L_p)
         tcr_mask: torch.Tensor,   # (B, L_t) float
         pep_mask: torch.Tensor,   # (B, L_p) float
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Return (tcr_pool, pep_pool) each (B, d_model)."""
-        tcr = self.pe(self.aa_embed(tcr_idx))  # (B, L_t, D)
-        pep = self.pe(self.aa_embed(pep_idx))  # (B, L_p, D)
+        if self.tcr_feature_proj is not None:
+            tcr = self.pe(self.tcr_feature_proj(tcr_input))  # (B, L_t, D)
+        else:
+            tcr = self.pe(self.aa_embed(tcr_input))            # (B, L_t, D)
+        pep = self.pe(self.aa_embed(pep_idx))                  # (B, L_p, D)
 
         for layer in self.layers:
             # Update TCR using peptide as context, then peptide using updated TCR
@@ -211,14 +220,14 @@ class CrossAttentionTCRPep(nn.Module):
 
     def forward(
         self,
-        tcr_idx:  torch.Tensor,
+        tcr_input: torch.Tensor,
         pep_idx:  torch.Tensor,
         tcr_mask: torch.Tensor,
         pep_mask: torch.Tensor,
         meta:     torch.Tensor = None,  # (B, meta_dim) optional
     ) -> torch.Tensor:
         """Return raw logits (B,)."""
-        tcr_pool, pep_pool = self.encode(tcr_idx, pep_idx, tcr_mask, pep_mask)
+        tcr_pool, pep_pool = self.encode(tcr_input, pep_idx, tcr_mask, pep_mask)
         pair = torch.cat([tcr_pool, pep_pool], dim=-1)  # (B, 2D)
         if meta is not None and self.meta_dim > 0:
             pair = torch.cat([pair, meta], dim=-1)
