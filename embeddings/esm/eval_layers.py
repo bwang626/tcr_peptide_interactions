@@ -441,6 +441,14 @@ def main():
     df = df.dropna(subset=required).reset_index(drop=True)
     logger.info(f"  {len(df):,} usable rows")
 
+    if len(df) == 0:
+        raise RuntimeError(
+            f"{args.data} contains no usable rows. "
+            "If you just ran prepare_dataset.py and it reported 100% stitching failures, "
+            "the IMGT reference data is likely missing — see the warning printed by that script. "
+            "The simplest fix on Colab is to upload esm_trb_dataset.csv directly instead of regenerating it."
+        )
+
     subset = build_balanced_subset(df, args.n_peptides, args.samples, args.seed)
 
     le = LabelEncoder()

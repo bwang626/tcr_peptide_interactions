@@ -101,9 +101,10 @@ def build_negatives(
     lev_cache = precompute_lev(unique_peptides)
     print("Done.", flush=True)
 
-    # Unique (cdr3, v_gene, j_gene) per peptide — each TCR in the dataset binds exactly one
-    # peptide (enforced by _drop_multi_peptide_tcrs in build_dataset.py), but the same
-    # (cdr3, v/j) may appear across multiple sources, so we deduplicate here.
+    # Unique (cdr3, v_gene, j_gene) per peptide. The same TCR may bind multiple peptides
+    # (build_dataset.py does not drop multipeptide TCRs), so the positive_set check in
+    # build_pool is the guard against mislabeling. We still deduplicate here because the
+    # same (cdr3, v/j) can appear across multiple sources for the same peptide.
     tcr_by_peptide: dict[str, list[dict]] = {}
     for peptide, grp in positives.groupby("peptide"):
         tcr_by_peptide[str(peptide)] = (
