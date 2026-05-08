@@ -161,7 +161,10 @@ def main():
 
     opt     = torch.optim.Adam(model.parameters(), lr=args.lr)
     sched   = torch.optim.lr_scheduler.ReduceLROnPlateau(opt, patience=max(1, args.patience // 2), factor=0.5)
-    loss_fn = nn.BCEWithLogitsLoss()
+    n_pos = int(df_train["label"].sum())
+    n_neg = len(df_train) - n_pos
+    pos_weight = torch.tensor([n_neg / n_pos], dtype=torch.float32, device=device)
+    loss_fn = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
 
     best_auc, best_state, bad_epochs = 0.0, None, 0
     os.makedirs(os.path.join(args.out, "checkpoints"), exist_ok=True)

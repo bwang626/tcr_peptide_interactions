@@ -66,25 +66,33 @@ def split_peptide_holdout(
     df: pd.DataFrame, test_frac: float, val_frac: float, seed: int
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     """
-    Hold out a fraction of unique peptides for test.
+    Hold out a fraction of unique peptides for test and val.
 
-    test_frac refers to the fraction of *unique peptides* assigned to test,
-    not the fraction of rows (actual row fraction may differ since some
-    peptides have many more pairs than others).
+    Both test_frac and val_frac refer to fractions of *unique peptides*,
+    not rows (actual row fractions may differ since some peptides have many
+    more pairs than others). Val peptides are drawn from the non-test pool,
+    so all three splits are fully disjoint at the peptide level.
     """
     rng = np.random.default_rng(seed)
     unique_peps = df["peptide"].unique()
     n_test = max(1, round(len(unique_peps) * test_frac))
+    n_val  = max(1, round(len(unique_peps) * val_frac))
 
-    test_peps = set(rng.choice(unique_peps, size=n_test, replace=False))
+    shuffled  = rng.permutation(unique_peps)
+    test_peps = set(shuffled[:n_test])
+    val_peps  = set(shuffled[n_test:n_test + n_val])
+
     test_mask = df["peptide"].isin(test_peps)
+    val_mask  = df["peptide"].isin(val_peps)
 
-    df_test     = df[test_mask].reset_index(drop=True)
-    df_trainval = df[~test_mask].reset_index(drop=True)
+    df_test  = df[test_mask].reset_index(drop=True)
+    df_val   = df[val_mask].reset_index(drop=True)
+    df_train = df[~test_mask & ~val_mask].reset_index(drop=True)
 
-    df_train, df_val = _simple_split(df_trainval, val_frac, seed)
-
-    logger.info(f"  Peptide holdout: {n_test}/{len(unique_peps)} unique peptides → test")
+    logger.info(
+        f"  Peptide holdout: {n_test}/{len(unique_peps)} → test, "
+        f"{n_val}/{len(unique_peps)} → val"
+    )
     return df_train, df_val, df_test
 
 
@@ -92,24 +100,32 @@ def split_tcr_holdout(
     df: pd.DataFrame, test_frac: float, val_frac: float, seed: int
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     """
-    Hold out a fraction of unique CDR3 sequences for test.
+    Hold out a fraction of unique CDR3 sequences for test and val.
 
     Uses CDR3 alone as the TCR identity key (V/J genes share CDR3s across
-    alleles, but CDR3 is the primary binding determinant).
+    alleles, but CDR3 is the primary binding determinant). All three splits
+    are fully disjoint at the CDR3 level.
     """
     rng = np.random.default_rng(seed)
     unique_tcrs = df["cdr3"].unique()
     n_test = max(1, round(len(unique_tcrs) * test_frac))
+    n_val  = max(1, round(len(unique_tcrs) * val_frac))
 
-    test_tcrs = set(rng.choice(unique_tcrs, size=n_test, replace=False))
+    shuffled  = rng.permutation(unique_tcrs)
+    test_tcrs = set(shuffled[:n_test])
+    val_tcrs  = set(shuffled[n_test:n_test + n_val])
+
     test_mask = df["cdr3"].isin(test_tcrs)
+    val_mask  = df["cdr3"].isin(val_tcrs)
 
-    df_test     = df[test_mask].reset_index(drop=True)
-    df_trainval = df[~test_mask].reset_index(drop=True)
+    df_test  = df[test_mask].reset_index(drop=True)
+    df_val   = df[val_mask].reset_index(drop=True)
+    df_train = df[~test_mask & ~val_mask].reset_index(drop=True)
 
-    df_train, df_val = _simple_split(df_trainval, val_frac, seed)
-
-    logger.info(f"  TCR holdout: {n_test}/{len(unique_tcrs)} unique CDR3s → test")
+    logger.info(
+        f"  TCR holdout: {n_test}/{len(unique_tcrs)} → test, "
+        f"{n_val}/{len(unique_tcrs)} → val"
+    )
     return df_train, df_val, df_test
 
 
@@ -148,7 +164,7 @@ def parse_args():
     p.add_argument("--test_frac", type=float, default=0.2,
                    help="Fraction of unique peptides/TCRs (holdout) or rows (random) for test")
     p.add_argument("--val_frac",  type=float, default=0.1,
-                   help="Fraction of full dataset reserved for val (from non-test portion)")
+                   help="Fraction of unique peptides/TCRs reserved for val (same holdout logic as test_frac; ignored for random strategy)")
     p.add_argument("--seed", type=int, default=42)
     return p.parse_args()
 

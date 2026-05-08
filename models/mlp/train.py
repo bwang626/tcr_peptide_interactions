@@ -20,6 +20,7 @@ from sklearn.metrics import (
     accuracy_score,
     average_precision_score,
     f1_score,
+    precision_recall_curve,
     roc_auc_score,
 )
 from torch.utils.data import DataLoader, TensorDataset
@@ -44,13 +45,25 @@ EXPERIMENTS = [
 ]
 
 
+ESM_PROJ_DIM = 128  # Project high-dim ESM embeddings down before the MLP layers
+
+
 class MLPClassifier(nn.Module):
-    def __init__(self, input_dim: int, hidden_dims: list[int] | None = None, dropout: float = 0.3):
+    def __init__(
+        self,
+        input_dim: int,
+        hidden_dims: list[int] | None = None,
+        dropout: float = 0.3,
+        proj_dim: int | None = None,
+    ):
         super().__init__()
         hidden_dims = hidden_dims or [256, 128, 64]
 
         layers: list[nn.Module] = []
         prev_dim = input_dim
+        if proj_dim is not None:
+            layers.extend([nn.Linear(prev_dim, proj_dim), nn.ReLU()])
+            prev_dim = proj_dim
         for hidden_dim in hidden_dims:
             layers.extend(
                 [
@@ -102,8 +115,15 @@ def predict_proba(model: nn.Module, loader: DataLoader, device: torch.device) ->
     return np.concatenate(all_labels), np.concatenate(all_probs)
 
 
-def compute_metrics(y_true: np.ndarray, y_prob: np.ndarray) -> dict[str, float]:
-    y_pred = (y_prob >= 0.5).astype(np.int64)
+def find_best_threshold(y_true: np.ndarray, y_prob: np.ndarray) -> float:
+    """Return the probability threshold that maximises F1 on the given set."""
+    precisions, recalls, thresholds = precision_recall_curve(y_true, y_prob)
+    f1s = 2 * precisions[:-1] * recalls[:-1] / (precisions[:-1] + recalls[:-1] + 1e-8)
+    return float(thresholds[np.argmax(f1s)])
+
+
+def compute_metrics(y_true: np.ndarray, y_prob: np.ndarray, threshold: float = 0.5) -> dict[str, float]:
+    y_pred = (y_prob >= threshold).astype(np.int64)
     auc = roc_auc_score(y_true, y_prob) if len(np.unique(y_true)) > 1 else 0.5
     auprc = average_precision_score(y_true, y_prob) if len(np.unique(y_true)) > 1 else float(y_true.mean())
     return {
@@ -111,6 +131,7 @@ def compute_metrics(y_true: np.ndarray, y_prob: np.ndarray) -> dict[str, float]:
         "auprc": float(auprc),
         "accuracy": float(accuracy_score(y_true, y_pred)),
         "f1": float(f1_score(y_true, y_pred, zero_division=0)),
+        "threshold": float(threshold),
     }
 
 
@@ -163,13 +184,17 @@ def run_experiment(
     val_loader = make_loader(X_val, y_val, args.batch_size, shuffle=False)
     test_loader = make_loader(X_test, y_test, args.batch_size, shuffle=False)
 
-    model = MLPClassifier(input_dim=X_train.shape[1], dropout=args.dropout).to(device)
+    proj_dim = ESM_PROJ_DIM if tcr_embedding.startswith("esm") else None
+    model = MLPClassifier(input_dim=X_train.shape[1], dropout=args.dropout, proj_dim=proj_dim).to(device)
     optimizer = torch.optim.Adam(
         model.parameters(),
         lr=args.lr,
         weight_decay=args.weight_decay,
     )
-    loss_fn = nn.BCEWithLogitsLoss()
+    n_pos = int(y_train.sum())
+    n_neg = len(y_train) - n_pos
+    pos_weight = torch.tensor([n_neg / n_pos], dtype=torch.float32, device=device)
+    loss_fn = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
 
     best_val_auc = -1.0
     best_state = None
@@ -216,8 +241,10 @@ def run_experiment(
     if best_state is not None:
         model.load_state_dict(best_state)
 
+    val_labels, val_probs = predict_proba(model, val_loader, device)
+    threshold = find_best_threshold(val_labels, val_probs)
     test_labels, test_probs = predict_proba(model, test_loader, device)
-    test_metrics = compute_metrics(test_labels, test_probs)
+    test_metrics = compute_metrics(test_labels, test_probs, threshold=threshold)
 
     experiment_out = os.path.join(args.out_dir, name)
     os.makedirs(experiment_out, exist_ok=True)
@@ -228,6 +255,7 @@ def run_experiment(
                 "input_dim": int(X_train.shape[1]),
                 "hidden_dims": [256, 128, 64],
                 "dropout": args.dropout,
+                "proj_dim": proj_dim,
             },
         },
         os.path.join(experiment_out, "model.pt"),

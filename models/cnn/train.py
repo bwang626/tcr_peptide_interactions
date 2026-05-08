@@ -293,7 +293,10 @@ def main():
     opt     = torch.optim.Adam(model.parameters(), lr=args.lr)
     sched   = torch.optim.lr_scheduler.ReduceLROnPlateau(
         opt, patience=max(1, args.patience // 2), factor=0.5)
-    loss_fn = nn.BCEWithLogitsLoss()
+    n_pos = int(y_tr.sum())
+    n_neg = len(y_tr) - n_pos
+    pos_weight = torch.tensor([n_neg / n_pos], dtype=torch.float32, device=device)
+    loss_fn = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
 
     # ── train loop ────────────────────────────────────────────────────────────
     best_auc, best_state, bad_epochs = 0.0, None, 0

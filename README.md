@@ -57,6 +57,8 @@ python build_negatives.py --input data/splits/test_pos.csv  --out-combined data/
 
 Each output adds a `label` column (1 = binding, 0 = non-binding) at a ~1:5 positive-to-negative ratio using Levenshtein-distance shuffling (IMMREP23 methodology).
 
+> **P:N ratio consistency.** Under peptide holdout, each split's negative pool is drawn only from its own peptides, so val and test tend to achieve a lower ratio than train. Use `--max-ratio` with the same value on all three splits to enforce a consistent ratio. `--max-ratio 3` is a safe floor based on empirical pool sizes, but verify first: run without `--max-ratio`, inspect the `Overall positive-to-negative ratio` printed by `print_ratio_report` for each split, and set `--max-ratio` to the minimum across all three.
+
 ### Step 5 — generate embeddings
 
 All embedding commands run from the repo root. Outputs go to `outputs/embeddings/` (gitignored).

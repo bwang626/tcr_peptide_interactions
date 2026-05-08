@@ -20,6 +20,7 @@ from sklearn.metrics import (
     accuracy_score,
     average_precision_score,
     f1_score,
+    precision_recall_curve,
     roc_auc_score,
 )
 
@@ -50,8 +51,15 @@ def parse_args():
     return p.parse_args()
 
 
-def compute_metrics(y_true: np.ndarray, y_prob: np.ndarray) -> dict[str, float]:
-    y_pred = (y_prob >= 0.5).astype(np.int64)
+def find_best_threshold(y_true: np.ndarray, y_prob: np.ndarray) -> float:
+    """Return the probability threshold that maximises F1 on the given set."""
+    precisions, recalls, thresholds = precision_recall_curve(y_true, y_prob)
+    f1s = 2 * precisions[:-1] * recalls[:-1] / (precisions[:-1] + recalls[:-1] + 1e-8)
+    return float(thresholds[np.argmax(f1s)])
+
+
+def compute_metrics(y_true: np.ndarray, y_prob: np.ndarray, threshold: float = 0.5) -> dict[str, float]:
+    y_pred = (y_prob >= threshold).astype(np.int64)
     auc = roc_auc_score(y_true, y_prob) if len(np.unique(y_true)) > 1 else 0.5
     auprc = average_precision_score(y_true, y_prob) if len(np.unique(y_true)) > 1 else float(y_true.mean())
     return {
@@ -59,6 +67,7 @@ def compute_metrics(y_true: np.ndarray, y_prob: np.ndarray) -> dict[str, float]:
         "auprc": float(auprc),
         "accuracy": float(accuracy_score(y_true, y_pred)),
         "f1": float(f1_score(y_true, y_pred, zero_division=0)),
+        "threshold": float(threshold),
     }
 
 
@@ -115,10 +124,16 @@ def run_experiment(
         n_estimators=500,
         n_jobs=-1,
         random_state=42,
+        class_weight="balanced",
+        oob_score=True,
     )
     clf.fit(X_fit, y_fit)
+    # Calibrate threshold using OOB predictions (no data leakage — each sample
+    # is scored only by trees that did not see it during training).
+    oob_probs = clf.oob_decision_function_[:, 1]
+    threshold = find_best_threshold(y_fit, oob_probs)
     y_prob = clf.predict_proba(X_test)[:, 1]
-    metrics = compute_metrics(y_test, y_prob)
+    metrics = compute_metrics(y_test, y_prob, threshold=threshold)
 
     experiment_out = os.path.join(out_dir, name)
     os.makedirs(experiment_out, exist_ok=True)

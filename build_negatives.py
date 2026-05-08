@@ -37,6 +37,12 @@ N_NEG_FROM_LEFTOUT = 2
 LEV_THRESHOLD = 3
 TCR_KEY = ["cdr3", "v_gene", "j_gene"]
 
+# Cap negatives at this multiple of positives to keep P:N consistent across splits.
+# Training scripts compute pos_weight = n_neg / n_pos dynamically from the data, so
+# they automatically reflect whatever ratio the data has — change this one value and
+# both negative generation and loss weighting stay in sync.
+DEFAULT_MAX_RATIO = 2
+
 
 def precompute_lev(peptides: list[str]) -> dict[tuple[str, str], int]:
     cache: dict[tuple[str, str], int] = {}
@@ -87,6 +93,7 @@ def build_negatives(
     n_leftout: int = N_NEG_FROM_LEFTOUT,
     min_pairs: int = MIN_PAIRS_THRESHOLD,
     lev_threshold: int = LEV_THRESHOLD,
+    max_ratio: int | None = None,
 ) -> pd.DataFrame:
     peptide_counts = positives.groupby("peptide").size()
     test_peptides: set[str] = set(peptide_counts[peptide_counts >= min_pairs].index)
@@ -149,6 +156,12 @@ def build_negatives(
     neg_df = pd.DataFrame(rows)
     # Remove duplicates: the same (TCR, peptide) pair may be sampled for multiple positives.
     neg_df = neg_df.drop_duplicates(subset=[*TCR_KEY, "peptide"]).reset_index(drop=True)
+
+    if max_ratio is not None:
+        target = int(len(positives) * max_ratio)
+        if len(neg_df) > target:
+            neg_df = neg_df.sample(n=target, random_state=rng.randint(0, 2**31)).reset_index(drop=True)
+
     return neg_df
 
 
@@ -193,6 +206,10 @@ def main() -> int:
                     help="Negatives per positive from left-out-group peptides")
     ap.add_argument("--lev-threshold", type=int, default=LEV_THRESHOLD,
                     help="Levenshtein distance threshold; negatives require dist > this value")
+    ap.add_argument("--max-ratio", type=int, default=DEFAULT_MAX_RATIO,
+                    help="Cap negatives to this multiple of positives after generation (e.g. 2 → 1:2). "
+                         "Use the same value for all splits to ensure a consistent P:N ratio. "
+                         f"Default: {DEFAULT_MAX_RATIO} (set by DEFAULT_MAX_RATIO in this module).")
     args = ap.parse_args()
 
     print(f"Loading positives from {args.input}...")
@@ -208,6 +225,7 @@ def main() -> int:
         n_leftout=args.n_leftout,
         min_pairs=args.min_pairs,
         lev_threshold=args.lev_threshold,
+        max_ratio=args.max_ratio,
     )
 
     print(f"\nGenerated {len(negatives):,} unique negative pairs")
