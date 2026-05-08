@@ -85,6 +85,8 @@ def parse_args():
     p.add_argument("--splits_dir", default="data/splits")
     p.add_argument("--embeddings_dir", default="outputs/embeddings")
     p.add_argument("--out_dir", default=OUT_DIR)
+    p.add_argument("--only_tcr", nargs="+", default=None,
+                   help="Only run experiments whose TCR embedding matches one of these names.")
     p.add_argument("--batch_size", type=int, default=512)
     p.add_argument("--epochs", type=int, default=200)
     p.add_argument("--patience", type=int, default=15)
@@ -158,6 +160,7 @@ def run_experiment(
             categorical=categorical,
             splits_dir=args.splits_dir,
             embeddings_dir=args.embeddings_dir,
+            drop_missing=True,
         )
         X_val, y_val = load_split(
             "val",
@@ -166,6 +169,7 @@ def run_experiment(
             categorical=categorical,
             splits_dir=args.splits_dir,
             embeddings_dir=args.embeddings_dir,
+            drop_missing=True,
         )
         X_test, y_test = load_split(
             "test",
@@ -174,6 +178,7 @@ def run_experiment(
             categorical=categorical,
             splits_dir=args.splits_dir,
             embeddings_dir=args.embeddings_dir,
+            drop_missing=True,
         )
     except (FileNotFoundError, KeyError, ValueError) as exc:
         logger.warning("Skipping experiment %s: %s", name, exc)
@@ -299,12 +304,37 @@ def run_experiment(
     }
 
 
+def _update_results_summary(out_dir: str, new_rows: list[dict]) -> None:
+    """Read existing results_summary.csv (if any), drop rows whose
+    experiment_name matches a row in `new_rows`, append `new_rows`, write back."""
+    if not new_rows:
+        return
+    path = os.path.join(out_dir, "results_summary.csv")
+    new_df = pd.DataFrame(new_rows)
+    new_names = set(new_df["experiment_name"])
+    if os.path.exists(path):
+        old = pd.read_csv(path)
+        old = old[~old["experiment_name"].isin(new_names)]
+        df = pd.concat([old, new_df], ignore_index=True)
+    else:
+        df = new_df
+    df.to_csv(path, index=False)
+    logger.info("Updated %s (%d new rows merged)", path, len(new_df))
+
+
 def main():
     args = parse_args()
     os.makedirs(args.out_dir, exist_ok=True)
 
+    experiments = EXPERIMENTS
+    if args.only_tcr:
+        wanted = set(args.only_tcr)
+        experiments = [e for e in EXPERIMENTS if e[0] in wanted]
+        logger.info("Filtering to TCR embeddings %s -> %d experiment(s)",
+                    sorted(wanted), len(experiments))
+
     results: list[dict] = []
-    for tcr_embedding, peptide_embedding, categorical in EXPERIMENTS:
+    for tcr_embedding, peptide_embedding, categorical in experiments:
         result = run_experiment(
             tcr_embedding=tcr_embedding,
             peptide_embedding=peptide_embedding,
@@ -314,9 +344,7 @@ def main():
         if result is not None:
             results.append(result)
 
-    summary_path = os.path.join(args.out_dir, "results_summary.csv")
-    pd.DataFrame(results).to_csv(summary_path, index=False)
-    logger.info("Wrote MLP summary: %s (%d successful experiments)", summary_path, len(results))
+    _update_results_summary(args.out_dir, results)
 
 
 if __name__ == "__main__":

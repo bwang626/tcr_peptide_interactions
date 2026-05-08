@@ -50,7 +50,7 @@ from sklearn.model_selection import train_test_split
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
 
-OUTPUT_COLS = ["cdr3", "v_gene", "j_gene", "peptide", "mhc_a", "mhc_class", "source"]
+OUTPUT_COLS = ["cdr3", "tcr_chain", "v_gene", "j_gene", "peptide", "mhc_a", "mhc_b", "mhc_class", "source"]
 
 
 # ── split strategies ──────────────────────────────────────────────────────────

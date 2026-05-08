@@ -232,16 +232,37 @@ def _build_augmenter(categorical: str, splits_dir: str):
     return augmenter
 
 
-def load_split(
+def load_split_separated(
     split: str,
     tcr_embedding: str,
     peptide_embedding: str | None = None,
-    categorical: str | None = None,
     splits_dir: str = "data/splits",
     embeddings_dir: str = "outputs/embeddings",
-) -> tuple[np.ndarray, np.ndarray]:
+    drop_missing: bool = False,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, pd.DataFrame]:
     """
-    Load a split's features and labels.
+    Sequence-keyed lookup that returns TCR and peptide matrices separately.
+
+    Unlike load_split(), this does not concatenate into a single X matrix and
+    does not append metadata. Use this when the downstream model needs the
+    TCR / peptide matrices kept apart (e.g. dual-branch CNN), and treats
+    metadata as a separate input.
+
+    Returns
+    -------
+    tcr_matrix     : (N, D_tcr) float32 -- one row per row of the split CSV
+                     (after optional drop_missing filtering)
+    peptide_matrix : (N, D_pep) float32
+    y              : (N,) int64 labels
+    df             : the split DataFrame (so callers can fit feature augmenters
+                     on metadata columns without reloading); reset to row-aligned
+                     order after drop_missing filtering
+
+    drop_missing : if True, drop rows whose TCR or peptide sequence isn't in
+        the corresponding embedding lookup (logging a warning). If False, raise
+        KeyError on any missing sequence. ESM embeddings can be missing a small
+        number of CDR3s due to upstream stitchr stop-codon failures, so
+        ESM-using callers typically want drop_missing=True.
 
     For ESM TCR embeddings, ``peptide_embedding`` must be provided because the ESM
     artifacts only contain TCR vectors.
@@ -263,29 +284,80 @@ def load_split(
             f"Embedding method {peptide_method} does not provide peptide embeddings"
         )
 
-    missing_tcr = sorted(set(df["cdr3"].astype(str)) - set(tcr_artifact.tcr_lookup))
-    missing_pep = sorted(set(df["peptide"].astype(str)) - set(peptide_artifact.peptide_lookup))
-    if missing_tcr:
-        preview = ", ".join(missing_tcr[:5])
-        raise KeyError(
-            f"{len(missing_tcr)} TCR sequences from split {split} were not found in "
-            f"{tcr_method} embeddings. Examples: {preview}"
+    tcr_seqs = df["cdr3"].astype(str)
+    pep_seqs = df["peptide"].astype(str)
+    has_tcr = tcr_seqs.isin(tcr_artifact.tcr_lookup)
+    has_pep = pep_seqs.isin(peptide_artifact.peptide_lookup)
+    n_missing_tcr_rows = int((~has_tcr).sum())
+    n_missing_pep_rows = int((~has_pep).sum())
+
+    if (n_missing_tcr_rows or n_missing_pep_rows) and not drop_missing:
+        if n_missing_tcr_rows:
+            preview = ", ".join(tcr_seqs[~has_tcr].unique()[:5].tolist())
+            raise KeyError(
+                f"{n_missing_tcr_rows} TCR rows from split {split} were not found in "
+                f"{tcr_method} embeddings. Examples: {preview}. "
+                f"Pass drop_missing=True to filter these out instead of raising."
+            )
+        if n_missing_pep_rows:
+            preview = ", ".join(pep_seqs[~has_pep].unique()[:5].tolist())
+            raise KeyError(
+                f"{n_missing_pep_rows} peptide rows from split {split} were not found in "
+                f"{peptide_method} embeddings. Examples: {preview}. "
+                f"Pass drop_missing=True to filter these out instead of raising."
+            )
+
+    if drop_missing and (n_missing_tcr_rows or n_missing_pep_rows):
+        keep = (has_tcr & has_pep).to_numpy()
+        n_dropped = len(df) - int(keep.sum())
+        logger.warning(
+            "Dropping %d/%d rows from split %s missing %s/%s embeddings "
+            "(missing TCR rows=%d, missing peptide rows=%d)",
+            n_dropped, len(df), split, tcr_method, peptide_method,
+            n_missing_tcr_rows, n_missing_pep_rows,
         )
-    if missing_pep:
-        preview = ", ".join(missing_pep[:5])
-        raise KeyError(
-            f"{len(missing_pep)} peptide sequences from split {split} were not found in "
-            f"{peptide_method} embeddings. Examples: {preview}"
-        )
+        df = df.loc[keep].reset_index(drop=True)
+        tcr_seqs = df["cdr3"].astype(str)
+        pep_seqs = df["peptide"].astype(str)
 
     tcr_matrix = np.stack(
-        [tcr_artifact.tcr_lookup[seq] for seq in df["cdr3"].astype(str)],
+        [tcr_artifact.tcr_lookup[seq] for seq in tcr_seqs],
         axis=0,
     ).astype(np.float32, copy=False)
     peptide_matrix = np.stack(
-        [peptide_artifact.peptide_lookup[seq] for seq in df["peptide"].astype(str)],
+        [peptide_artifact.peptide_lookup[seq] for seq in pep_seqs],
         axis=0,
     ).astype(np.float32, copy=False)
+
+    y = df["label"].to_numpy(dtype=np.int64, copy=True)
+    logger.info(
+        "Loaded split=%s tcr=%s (%s) peptide=%s (%s) -> rows=%d",
+        split,
+        tcr_method, tcr_matrix.shape,
+        peptide_method, peptide_matrix.shape,
+        len(df),
+    )
+    return tcr_matrix, peptide_matrix, y, df
+
+
+def load_split(
+    split: str,
+    tcr_embedding: str,
+    peptide_embedding: str | None = None,
+    categorical: str | None = None,
+    splits_dir: str = "data/splits",
+    embeddings_dir: str = "outputs/embeddings",
+    drop_missing: bool = False,
+) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Load a split's features and labels with TCR + peptide concatenated and
+    optional metadata augmentation appended.
+    """
+    tcr_matrix, peptide_matrix, y, df = load_split_separated(
+        split, tcr_embedding, peptide_embedding,
+        splits_dir=splits_dir, embeddings_dir=embeddings_dir,
+        drop_missing=drop_missing,
+    )
     X = np.concatenate([tcr_matrix, peptide_matrix], axis=1)
 
     if categorical is not None:
@@ -295,14 +367,5 @@ def load_split(
         augmenter = _build_augmenter(categorical, splits_dir)
         X = augmenter.augment(X, df).astype(np.float32, copy=False)
 
-    y = df["label"].to_numpy(dtype=np.int64, copy=True)
-    logger.info(
-        "Loaded split=%s tcr=%s peptide=%s categorical=%s -> X=%s y=%s",
-        split,
-        tcr_method,
-        peptide_method,
-        categorical or "none",
-        X.shape,
-        y.shape,
-    )
+    logger.info("  -> X=%s (categorical=%s)", X.shape, categorical or "none")
     return X, y

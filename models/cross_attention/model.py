@@ -19,8 +19,8 @@ Token mode (default, esm_dim=0):
     Inputs are integer token indices (B, L). An internal nn.Embedding maps
     them to (B, L, d_model).
 
-ESM mode (esm_dim > 0):
-    Inputs are pre-computed per-residue ESM hidden states (B, L, esm_dim).
+ESM mode (tcr_feature_dim > 0):
+    Inputs are pre-computed per-residue ESM hidden states (B, L, tcr_feature_dim).
     A learned linear projection maps them to (B, L, d_model).
     Use encode_esm() / forward_esm() instead of encode() / forward().
     Masks are float tensors (1=real residue, 0=padding) of shape (B, L).
@@ -43,7 +43,7 @@ Usage (token mode):
     logits = model(tcr_idx, pep_idx, tcr_mask, pep_mask)
 
 Usage (ESM mode):
-    model = CrossAttentionTCRPep(d_model=256, n_heads=8, n_layers=2, esm_dim=1152)
+    model = CrossAttentionTCRPep(d_model=256, n_heads=8, n_layers=2, tcr_feature_dim=1152)
     # tcr_esm: (B, L_cdr3, 1152)  pep_esm: (B, L_pep, 1152)
     logits = model.forward_esm(tcr_esm, pep_esm, tcr_mask, pep_mask)
 """
@@ -179,27 +179,27 @@ class CrossAttentionTCRPep(nn.Module):
         ff_dim:   int   = None,
         dropout:  float = 0.1,
         meta_dim: int   = 0,
-        esm_dim:  int   = 0,
+        tcr_feature_dim: int = 0,
     ):
         """
         Args:
-            esm_dim: If > 0, enable ESM input mode. Adds a Linear(esm_dim, d_model)
-                     projection applied to pre-computed per-residue embeddings.
-                     Use forward_esm() when this is set.
+            tcr_feature_dim: If > 0, the TCR side consumes pre-computed per-residue
+                             features (e.g. ESM hidden states) instead of token IDs.
+                             A Linear(tcr_feature_dim, d_model) projection is applied.
+                             Use forward_esm() when this is set.
         """
         super().__init__()
         ff_dim = ff_dim or 4 * d_model
 
-        self.d_model  = d_model
-        self.meta_dim = meta_dim
-        self.esm_dim  = esm_dim
+        self.d_model         = d_model
+        self.meta_dim        = meta_dim
+        self.tcr_feature_dim = tcr_feature_dim
 
-        # Token mode: learned AA embedding (used when esm_dim == 0)
+        # Token mode: learned AA embedding (used when tcr_feature_dim == 0)
         self.aa_embed = nn.Embedding(VOCAB_SIZE, d_model, padding_idx=AA_TO_IDX[PAD_TOKEN])
-
-        # ESM mode: project pre-computed per-residue hidden states → d_model
-        self.esm_proj = nn.Linear(esm_dim, d_model) if esm_dim > 0 else None
-
+        # When tcr_feature_dim > 0, project pre-computed per-residue features → d_model
+        self.tcr_feature_proj = (nn.Linear(tcr_feature_dim, d_model)
+                                 if tcr_feature_dim > 0 else None)
         self.pe = SinusoidalPE(d_model, max_len=max(TCR_MAX_LEN, PEP_MAX_LEN) + 4)
 
         self.layers = nn.ModuleList([
@@ -222,14 +222,17 @@ class CrossAttentionTCRPep(nn.Module):
 
     def encode(
         self,
-        tcr_idx:  torch.Tensor,   # (B, L_t)
+        tcr_input: torch.Tensor,  # (B, L_t) long token ids OR (B, L_t, F) float features
         pep_idx:  torch.Tensor,   # (B, L_p)
         tcr_mask: torch.Tensor,   # (B, L_t) float
         pep_mask: torch.Tensor,   # (B, L_p) float
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Return (tcr_pool, pep_pool) each (B, d_model)."""
-        tcr = self.pe(self.aa_embed(tcr_idx))  # (B, L_t, D)
-        pep = self.pe(self.aa_embed(pep_idx))  # (B, L_p, D)
+        if self.tcr_feature_proj is not None:
+            tcr = self.pe(self.tcr_feature_proj(tcr_input))  # (B, L_t, D)
+        else:
+            tcr = self.pe(self.aa_embed(tcr_input))            # (B, L_t, D)
+        pep = self.pe(self.aa_embed(pep_idx))                  # (B, L_p, D)
 
         for layer in self.layers:
             # Update TCR using peptide as context, then peptide using updated TCR
@@ -240,14 +243,14 @@ class CrossAttentionTCRPep(nn.Module):
 
     def forward(
         self,
-        tcr_idx:  torch.Tensor,
+        tcr_input: torch.Tensor,
         pep_idx:  torch.Tensor,
         tcr_mask: torch.Tensor,
         pep_mask: torch.Tensor,
         meta:     torch.Tensor = None,  # (B, meta_dim) optional
     ) -> torch.Tensor:
         """Return raw logits (B,)."""
-        tcr_pool, pep_pool = self.encode(tcr_idx, pep_idx, tcr_mask, pep_mask)
+        tcr_pool, pep_pool = self.encode(tcr_input, pep_idx, tcr_mask, pep_mask)
         pair = torch.cat([tcr_pool, pep_pool], dim=-1)  # (B, 2D)
         if meta is not None and self.meta_dim > 0:
             pair = torch.cat([pair, meta], dim=-1)
@@ -265,14 +268,14 @@ class CrossAttentionTCRPep(nn.Module):
         Returns (tcr_pool, pep_pool) each (B, d_model).
         Requires esm_dim > 0 at construction time.
         """
-        if self.esm_proj is None:
+        if self.tcr_feature_proj is None:
             raise RuntimeError(
-                "encode_esm() requires esm_dim > 0. "
-                "Re-initialise with CrossAttentionTCRPep(esm_dim=1152)."
+                "encode_esm() requires tcr_feature_dim > 0. "
+                "Re-initialise with CrossAttentionTCRPep(tcr_feature_dim=1152)."
             )
-        # Project ESM dim → d_model, then add positional encoding
-        tcr = self.pe(self.esm_proj(tcr_esm))  # (B, L_cdr3, d_model)
-        pep = self.pe(self.esm_proj(pep_esm))  # (B, L_pep,  d_model)
+        # Project per-residue features → d_model, then add positional encoding
+        tcr = self.pe(self.tcr_feature_proj(tcr_esm))  # (B, L_cdr3, d_model)
+        pep = self.pe(self.tcr_feature_proj(pep_esm))  # (B, L_pep,  d_model)
 
         for layer in self.layers:
             tcr = layer(tcr, pep, tcr_mask, pep_mask)

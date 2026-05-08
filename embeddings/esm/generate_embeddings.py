@@ -192,13 +192,19 @@ def _embed_batch(
     pooling: str,
     device: str,
     bos_offset: int,
-) -> tuple[np.ndarray, np.ndarray]:
+    per_residue_max_len: int = 0,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray | None, np.ndarray | None]:
     """Tokenise and embed one batch.
 
     Returns
     -------
-    full_emb : float32 (B, D)
-    cdr3_emb : float32 (B, D)  — NaN rows where CDR3 span is unknown.
+    full_emb         : float32 (B, D)
+    cdr3_emb         : float32 (B, D)  — NaN rows where CDR3 span is unknown.
+    cdr3_per_residue : float16 (B, per_residue_max_len, D)  — zero-padded;
+                       all-zero rows where CDR3 span is unknown or length is 0.
+                       Only returned when per_residue_max_len > 0; otherwise None.
+    cdr3_length      : int32   (B,)  — length of the CDR3 span, 0 if unknown.
+                       Only returned when per_residue_max_len > 0; otherwise None.
     """
     enc = tokenizer(seqs, return_tensors="pt", padding=True).to(device)
 
@@ -206,9 +212,12 @@ def _embed_batch(
         out = model(**enc, output_hidden_states=True)
 
     hidden = out.hidden_states[layer_idx]  # (B, L_padded, D)
+    hidden_dim = hidden.shape[-1]
 
     full_list: list[np.ndarray] = []
     cdr3_list: list[np.ndarray] = []
+    pr_list: list[np.ndarray] = [] if per_residue_max_len > 0 else []
+    len_list: list[int] = [] if per_residue_max_len > 0 else []
 
     for i, (seq, (cdr3_start, cdr3_end)) in enumerate(zip(seqs, cdr3_spans)):
         tok_start = bos_offset
@@ -220,10 +229,26 @@ def _embed_batch(
         if cdr3_start is not None and cdr3_end is not None:
             cdr3_residues = residues[int(cdr3_start) : int(cdr3_end), :]
             cdr3_list.append(_pool(cdr3_residues, pooling).cpu().float().numpy())
+            if per_residue_max_len > 0:
+                cdr3_len = min(cdr3_residues.shape[0], per_residue_max_len)
+                pad = np.zeros((per_residue_max_len, hidden_dim), dtype=np.float16)
+                if cdr3_len > 0:
+                    pad[:cdr3_len] = cdr3_residues[:cdr3_len].cpu().float().numpy().astype(np.float16)
+                pr_list.append(pad)
+                len_list.append(int(cdr3_len))
         else:
             cdr3_list.append(np.full(residues.shape[-1], np.nan, dtype=np.float32))
+            if per_residue_max_len > 0:
+                pr_list.append(np.zeros((per_residue_max_len, hidden_dim), dtype=np.float16))
+                len_list.append(0)
 
-    return np.stack(full_list, axis=0), np.stack(cdr3_list, axis=0)
+    full_arr = np.stack(full_list, axis=0)
+    cdr3_arr = np.stack(cdr3_list, axis=0)
+    if per_residue_max_len > 0:
+        pr_arr  = np.stack(pr_list, axis=0)
+        len_arr = np.asarray(len_list, dtype=np.int32)
+        return full_arr, cdr3_arr, pr_arr, len_arr
+    return full_arr, cdr3_arr, None, None
 
 
 # ---------------------------------------------------------------------------
@@ -246,6 +271,13 @@ def parse_args():
     p.add_argument("--batch_size", type=int, default=DEFAULT_BATCH)
     p.add_argument("--limit",      type=int, default=None,
                    help="Cap sequences processed, e.g. --limit 100 for a quick test.")
+    p.add_argument("--save_per_residue", action="store_true",
+                   help="Also save per-residue CDR3 hidden states (cdr3_per_residue.npy "
+                        "shape (N, max_cdr3_len, D) float16, plus cdr3_lengths.npy). "
+                        "Used by the cross-attention model when consuming ESM features.")
+    p.add_argument("--per_residue_max_len", type=int, default=30,
+                   help="Padded length for cdr3_per_residue.npy (default 30, matches "
+                        "DEFAULT_MAX_LEN['tcr'] in embeddings/one_hot/model.py).")
     return p.parse_args()
 
 
@@ -288,6 +320,11 @@ def main():
 
     full_embs = np.full((len(df), hidden_dim), np.nan, dtype=np.float32)
     cdr3_embs = np.full((len(df), hidden_dim), np.nan, dtype=np.float32)
+    pr_max = args.per_residue_max_len if args.save_per_residue else 0
+    cdr3_pr_embs = (np.zeros((len(df), pr_max, hidden_dim), dtype=np.float16)
+                    if args.save_per_residue else None)
+    cdr3_lengths = (np.zeros(len(df), dtype=np.int32)
+                    if args.save_per_residue else None)
 
     for b_idx, row_indices in enumerate(batches):
         seqs = [df.at[i, "full_aa"] for i in row_indices]
@@ -299,13 +336,17 @@ def main():
             for i in row_indices
         ]
 
-        full_batch, cdr3_batch = _embed_batch(
-            model, tokenizer, seqs, spans, tcr_layer_idx, args.pooling, device, bos_offset
+        full_batch, cdr3_batch, pr_batch, len_batch = _embed_batch(
+            model, tokenizer, seqs, spans, tcr_layer_idx, args.pooling, device, bos_offset,
+            per_residue_max_len=pr_max,
         )
 
         for local_i, global_i in enumerate(row_indices):
             full_embs[global_i] = full_batch[local_i]
             cdr3_embs[global_i] = cdr3_batch[local_i]
+            if args.save_per_residue:
+                cdr3_pr_embs[global_i] = pr_batch[local_i]
+                cdr3_lengths[global_i] = len_batch[local_i]
 
         if (b_idx + 1) % 20 == 0 or (b_idx + 1) == len(batches):
             n_done = min((b_idx + 1) * args.batch_size, len(df))
@@ -336,6 +377,9 @@ def main():
     np.save(os.path.join(args.out, "full_embeddings.npy"),    full_embs)
     np.save(os.path.join(args.out, "cdr3_embeddings.npy"),    cdr3_embs)
     np.save(os.path.join(args.out, "peptide_embeddings.npy"), pep_embs)
+    if args.save_per_residue:
+        np.save(os.path.join(args.out, "cdr3_per_residue.npy"), cdr3_pr_embs)
+        np.save(os.path.join(args.out, "cdr3_lengths.npy"),     cdr3_lengths)
 
     index_cols = [c for c in INDEX_COLS if c in df.columns]
     df[index_cols].to_csv(os.path.join(args.out, "embedding_index.csv"), index=True)
@@ -347,6 +391,10 @@ def main():
                 f"({cdr3_valid:,} valid, {len(df) - cdr3_valid:,} NaN — missing CDR3 span)")
     logger.info(f"  peptide_embeddings.npy : {pep_embs.shape}  "
                 f"({pep_valid:,} valid)")
+    if args.save_per_residue:
+        logger.info(f"  cdr3_per_residue.npy   : {cdr3_pr_embs.shape}  float16  "
+                    f"({(cdr3_lengths > 0).sum():,} non-empty)")
+        logger.info(f"  cdr3_lengths.npy       : {cdr3_lengths.shape}  int32")
     logger.info(f"  embedding_index.csv    : {len(df):,} rows, columns={index_cols}")
     logger.info(f"  TCR layer    : {_layer_label(tcr_layer_idx)}")
     logger.info(f"  Peptide layer: {_layer_label(pep_layer_idx)}")
