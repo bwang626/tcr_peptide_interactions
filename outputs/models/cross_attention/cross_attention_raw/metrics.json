@@ -1,15 +1,15 @@
 {
-  "accuracy": 0.7083052560646901,
-  "auprc": 0.3721403809728041,
-  "auroc": 0.6157950877206477,
-  "best_val_auroc": 0.8595412707273233,
+  "accuracy": 0.6522554671058651,
+  "auprc": 0.43403246267106294,
+  "auroc": 0.6456793062981732,
+  "best_val_auroc": 0.5865581224310266,
   "experiment_name": "cross_attention_raw",
-  "f1": 0.05322154378930101,
+  "f1": 0.4697963169642857,
   "metadata": "none",
   "model_type": "cross_attention",
   "n_params": 143233,
-  "n_test": 35616,
-  "n_train": 261118,
-  "n_val": 31109,
+  "n_test": 43716,
+  "n_train": 115188,
+  "n_val": 46038,
   "tcr_input": "raw"
 }

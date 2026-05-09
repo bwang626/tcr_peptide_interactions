@@ -1,14 +1,14 @@
 {
-  "accuracy": 0.7074067834681043,
-  "auprc": 0.3067830777824219,
-  "auroc": 0.5408918198548854,
-  "best_val_auroc": 0.915985163552917,
+  "accuracy": 0.6875972184097355,
+  "auprc": 0.5343955089674455,
+  "auroc": 0.735262124012733,
+  "best_val_auroc": 0.6935902270897005,
   "experiment_name": "gnn_aug-cat_ae",
-  "f1": 0.041041685837857736,
+  "f1": 0.23912195665496686,
   "feature_augment": "cat_ae",
   "model_type": "gnn",
   "n_params": 64930,
-  "n_test": 35616,
-  "n_train": 261118,
-  "n_val": 31109
+  "n_test": 43716,
+  "n_train": 115188,
+  "n_val": 46038
 }

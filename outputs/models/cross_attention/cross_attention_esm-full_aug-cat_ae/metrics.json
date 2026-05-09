@@ -1,0 +1,15 @@
+{
+  "accuracy": 0.5643013999451002,
+  "auprc": 0.3158110903517436,
+  "auroc": 0.4658310613729363,
+  "best_val_auroc": 0.5165459743059733,
+  "experiment_name": "cross_attention_esm-full_aug-cat_ae",
+  "f1": 0.2798593519603766,
+  "metadata": "cat_ae",
+  "model_type": "cross_attention",
+  "n_params": 221185,
+  "n_test": 43716,
+  "n_train": 115188,
+  "n_val": 46038,
+  "tcr_input": "esm/full"
+}

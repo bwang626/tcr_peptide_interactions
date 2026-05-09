@@ -1,0 +1,24 @@
+epoch=  1  train_loss=0.8687  val_loss=0.5887  val_auc=0.7647
+epoch=  2  train_loss=0.8476  val_loss=0.5980  val_auc=0.7637
+epoch=  3  train_loss=0.8405  val_loss=0.5350  val_auc=0.7825
+epoch=  4  train_loss=0.8290  val_loss=0.6013  val_auc=0.7159
+epoch=  5  train_loss=0.8241  val_loss=0.5796  val_auc=0.7586
+epoch=  6  train_loss=0.8191  val_loss=0.5421  val_auc=0.7653
+epoch=  7  train_loss=0.8176  val_loss=0.6166  val_auc=0.6098
+epoch=  8  train_loss=0.7931  val_loss=0.5200  val_auc=0.7839
+epoch=  9  train_loss=0.7808  val_loss=0.5533  val_auc=0.7338
+epoch= 10  train_loss=0.7713  val_loss=0.5717  val_auc=0.7141
+epoch= 11  train_loss=0.7609  val_loss=0.5128  val_auc=0.7934
+epoch= 12  train_loss=0.7449  val_loss=0.5480  val_auc=0.7513
+epoch= 13  train_loss=0.7306  val_loss=0.5013  val_auc=0.7871
+epoch= 14  train_loss=0.7195  val_loss=0.6781  val_auc=0.5877
+epoch= 15  train_loss=0.7094  val_loss=0.6309  val_auc=0.5890
+epoch= 16  train_loss=0.7430  val_loss=0.6302  val_auc=0.5891
+
+best_val_auc=0.7934
+metadata=none
+n_params=217025
+test_auroc=0.6790
+test_auprc=0.4725
+test_accuracy=0.7086
+test_f1=0.4806

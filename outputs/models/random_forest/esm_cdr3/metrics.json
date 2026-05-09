@@ -3,16 +3,17 @@
   "experiment_name": "esm_cdr3",
   "input_dim": 1216,
   "metrics": {
-    "accuracy": 0.7149797798247585,
-    "auprc": 0.47754226218651463,
-    "auroc": 0.6614530618577266,
-    "f1": 0.022536839063854376
+    "accuracy": 0.6684509104218135,
+    "auprc": 0.35556892348012964,
+    "auroc": 0.5283869758762764,
+    "f1": 0.02357855025599569,
+    "threshold": 0.41208791208791207
   },
   "model_type": "random_forest",
-  "n_test": 35608,
-  "n_train": 261093,
-  "n_train_combined": 292202,
-  "n_val": 31109,
+  "n_test": 43716,
+  "n_train": 115188,
+  "n_train_combined": 161226,
+  "n_val": 46038,
   "peptide_embedding": "autoencoder/plain_ae",
   "tcr_embedding": "esm/cdr3"
 }

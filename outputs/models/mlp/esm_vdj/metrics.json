@@ -1,0 +1,19 @@
+{
+  "best_val_auroc": 0.5,
+  "categorical": null,
+  "experiment_name": "esm_vdj",
+  "input_dim": 1216,
+  "metrics": {
+    "accuracy": 0.33331045841339557,
+    "auprc": 0.33331045841339557,
+    "auroc": 0.5,
+    "f1": 0.49997426527356015,
+    "threshold": 0.4924699366092682
+  },
+  "model_type": "mlp",
+  "n_test": 43716,
+  "n_train": 115188,
+  "n_val": 46038,
+  "peptide_embedding": "autoencoder/plain_ae",
+  "tcr_embedding": "esm/full"
+}

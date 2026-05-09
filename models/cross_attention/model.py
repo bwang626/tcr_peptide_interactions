@@ -180,13 +180,16 @@ class CrossAttentionTCRPep(nn.Module):
         dropout:  float = 0.1,
         meta_dim: int   = 0,
         tcr_feature_dim: int = 0,
+        max_tcr_len: int = TCR_MAX_LEN,
     ):
         """
         Args:
             tcr_feature_dim: If > 0, the TCR side consumes pre-computed per-residue
                              features (e.g. ESM hidden states) instead of token IDs.
                              A Linear(tcr_feature_dim, d_model) projection is applied.
-                             Use forward_esm() when this is set.
+            max_tcr_len:     Maximum TCR sequence length, used to size the positional
+                             encoding. Default 30 matches the AA-token CDR3 path.
+                             Set to 160 for ESM full V-D-J input.
         """
         super().__init__()
         ff_dim = ff_dim or 4 * d_model
@@ -194,13 +197,14 @@ class CrossAttentionTCRPep(nn.Module):
         self.d_model         = d_model
         self.meta_dim        = meta_dim
         self.tcr_feature_dim = tcr_feature_dim
+        self.max_tcr_len     = max_tcr_len
 
         # Token mode: learned AA embedding (used when tcr_feature_dim == 0)
         self.aa_embed = nn.Embedding(VOCAB_SIZE, d_model, padding_idx=AA_TO_IDX[PAD_TOKEN])
         # When tcr_feature_dim > 0, project pre-computed per-residue features → d_model
         self.tcr_feature_proj = (nn.Linear(tcr_feature_dim, d_model)
                                  if tcr_feature_dim > 0 else None)
-        self.pe = SinusoidalPE(d_model, max_len=max(TCR_MAX_LEN, PEP_MAX_LEN) + 4)
+        self.pe = SinusoidalPE(d_model, max_len=max(max_tcr_len, PEP_MAX_LEN) + 4)
 
         self.layers = nn.ModuleList([
             CrossAttentionBlock(d_model, n_heads, ff_dim, dropout)

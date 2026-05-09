@@ -1,11 +1,11 @@
 strategy:   peptide_holdout
-test_frac:  0.15
+test_frac:  0.2
 val_frac:   0.1
 seed:       42
 
-train_pos   rows= 62,233  peptides=1,094  CDR3s=47,091
-val_pos     rows=  6,915  peptides= 374  CDR3s= 6,292
-test_pos    rows= 10,250  peptides= 202  CDR3s= 7,234
+train_pos   rows= 38,401  peptides= 944  CDR3s=28,994
+val_pos     rows= 26,424  peptides= 135  CDR3s=16,751
+test_pos    rows= 14,573  peptides= 270  CDR3s=13,572
 
 Next step: run build_negatives.py on each split:
   python build_negatives.py --input data/splits/train_pos.csv --out-combined data/splits/train.csv

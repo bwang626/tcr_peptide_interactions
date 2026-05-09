@@ -1,15 +1,17 @@
 {
-  "accuracy": 0.6748371518418689,
-  "auprc": 0.31101110567850204,
-  "auroc": 0.5308968294413685,
-  "best_val_auroc": 0.94120821443871,
+  "accuracy": 0.6453929911245311,
+  "auprc": 0.43313370853261746,
+  "auroc": 0.666649061306273,
+  "best_val_auroc": 0.5019393898122577,
   "embedding": "one_hot",
   "experiment_name": "one_hot_aug-one_hot",
-  "f1": 0.1652130036762056,
+  "f1": 0.3450228156160216,
   "feature_augment": "one_hot",
   "model_type": "cnn",
-  "n_params": 81729,
-  "n_test": 35616,
-  "n_train": 261118,
-  "n_val": 31109
+  "n_params": 81857,
+  "n_test": 43716,
+  "n_train": 115188,
+  "n_val": 46038,
+  "peptide_embedding": "one_hot",
+  "tcr_embedding": "one_hot"
 }

@@ -50,6 +50,8 @@ def parse_args():
     p.add_argument("--out_dir", default=OUT_DIR)
     p.add_argument("--only_tcr", nargs="+", default=None,
                    help="Only run experiments whose TCR embedding matches one of these names.")
+    p.add_argument("--force", action="store_true",
+                   help="Re-run experiments whose row is already in results_summary.csv.")
     return p.parse_args()
 
 
@@ -181,6 +183,14 @@ def run_experiment(
     }
 
 
+def _already_in_summary(out_dir: str, name: str) -> bool:
+    path = os.path.join(out_dir, "results_summary.csv")
+    if not os.path.exists(path):
+        return False
+    df = pd.read_csv(path)
+    return name in df["experiment_name"].astype(str).tolist()
+
+
 def _update_results_summary(out_dir: str, new_rows: list[dict]) -> None:
     """Row-replace update of results_summary.csv keyed by experiment_name."""
     if not new_rows:
@@ -188,7 +198,7 @@ def _update_results_summary(out_dir: str, new_rows: list[dict]) -> None:
     path = os.path.join(out_dir, "results_summary.csv")
     new_df = pd.DataFrame(new_rows)
     new_names = set(new_df["experiment_name"])
-    if os.path.exists(path):
+    if os.path.exists(path) and os.path.getsize(path) > 0:
         old = pd.read_csv(path)
         old = old[~old["experiment_name"].isin(new_names)]
         df = pd.concat([old, new_df], ignore_index=True)
@@ -211,6 +221,10 @@ def main():
 
     results: list[dict] = []
     for tcr_embedding, peptide_embedding, categorical in experiments:
+        name = experiment_dir_name(tcr_embedding, peptide_embedding, categorical)
+        if not args.force and _already_in_summary(args.out_dir, name):
+            logger.info("Skipping %s: already in results_summary.csv (use --force to re-run)", name)
+            continue
         result = run_experiment(
             tcr_embedding=tcr_embedding,
             peptide_embedding=peptide_embedding,
@@ -221,8 +235,9 @@ def main():
         )
         if result is not None:
             results.append(result)
+            _update_results_summary(args.out_dir, [result])
 
-    _update_results_summary(args.out_dir, results)
+    logger.info("Done. %d new experiment row(s) merged.", len(results))
 
 
 if __name__ == "__main__":

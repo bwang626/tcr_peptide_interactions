@@ -1,0 +1,15 @@
+epoch=  1  train_loss=0.9025  val_loss=0.6567  val_auc=0.4563
+epoch=  2  train_loss=0.8997  val_loss=0.6524  val_auc=0.5118
+epoch=  3  train_loss=0.9000  val_loss=0.6527  val_auc=0.4634
+epoch=  4  train_loss=0.9005  val_loss=0.6523  val_auc=0.4238
+epoch=  5  train_loss=0.8995  val_loss=0.6469  val_auc=0.4289
+epoch=  6  train_loss=0.9004  val_loss=0.6742  val_auc=0.4927
+epoch=  7  train_loss=0.8997  val_loss=0.6555  val_auc=0.4182
+
+best_val_auc=0.5118
+metadata=none
+n_params=217025
+test_auroc=0.5715
+test_auprc=0.3820
+test_accuracy=0.6148
+test_f1=0.2584

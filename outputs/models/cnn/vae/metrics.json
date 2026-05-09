@@ -1,15 +1,17 @@
 {
-  "accuracy": 0.7125449236298292,
-  "auprc": 0.32301624937366724,
-  "auroc": 0.5297988915448565,
-  "best_val_auroc": 0.8232517208003681,
+  "accuracy": 0.6644477994327019,
+  "auprc": 0.41216690883914364,
+  "auroc": 0.5965687620012532,
+  "best_val_auroc": 0.5279356090603522,
   "embedding": "vae",
   "experiment_name": "vae",
-  "f1": 0.015576923076923077,
+  "f1": 0.006770939129257228,
   "feature_augment": "none",
   "model_type": "cnn",
   "n_params": 58497,
-  "n_test": 35616,
-  "n_train": 261118,
-  "n_val": 31109
+  "n_test": 43716,
+  "n_train": 115188,
+  "n_val": 46038,
+  "peptide_embedding": "autoencoder/vae",
+  "tcr_embedding": "autoencoder/vae"
 }

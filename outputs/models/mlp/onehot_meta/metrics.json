@@ -1,18 +1,19 @@
 {
-  "best_val_auroc": 0.9270432615939929,
+  "best_val_auroc": 0.5737505199369328,
   "categorical": "one_hot",
   "experiment_name": "onehot_meta",
-  "input_dim": 1143,
+  "input_dim": 1145,
   "metrics": {
-    "accuracy": 0.699601302785265,
-    "auprc": 0.3699696782053652,
-    "auroc": 0.6032087622571408,
-    "f1": 0.19489803596959893
+    "accuracy": 0.44070820752127365,
+    "auprc": 0.3851496266667095,
+    "auroc": 0.6027515660652716,
+    "f1": 0.5341792409693644,
+    "threshold": 0.2317393571138382
   },
   "model_type": "mlp",
-  "n_test": 35616,
-  "n_train": 261118,
-  "n_val": 31109,
+  "n_test": 43716,
+  "n_train": 115188,
+  "n_val": 46038,
   "peptide_embedding": "one_hot",
   "tcr_embedding": "one_hot"
 }

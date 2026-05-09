@@ -85,12 +85,23 @@ class LabeledDataset(Dataset):
 # ── ESM per-residue lookup ────────────────────────────────────────────────────
 
 class ESMTcrLookup:
-    """First-occurrence cdr3 → (per-residue feature row, length) lookup."""
+    """First-occurrence cdr3 → (per-residue feature row, length) lookup.
 
-    def __init__(self, esm_dir: str):
-        index_path     = os.path.join(esm_dir, "embedding_index.csv")
-        per_residue    = os.path.join(esm_dir, "cdr3_per_residue.npy")
-        lengths_path   = os.path.join(esm_dir, "cdr3_lengths.npy")
+    region="cdr3" loads cdr3_per_residue.npy + cdr3_lengths.npy (CDR3 region
+    only, ≤30 residues). region="full" loads full_per_residue.npy +
+    full_lengths.npy (V-D-J region, ≤160 residues by default — the constant
+    region is excluded since it is invariant across TCRs).
+    """
+
+    def __init__(self, esm_dir: str, region: str = "cdr3"):
+        if region not in {"cdr3", "full"}:
+            raise ValueError(f"region must be 'cdr3' or 'full', got {region!r}")
+        self.region = region
+        prefix = "cdr3" if region == "cdr3" else "full"
+
+        index_path   = os.path.join(esm_dir, "embedding_index.csv")
+        per_residue  = os.path.join(esm_dir, f"{prefix}_per_residue.npy")
+        lengths_path = os.path.join(esm_dir, f"{prefix}_lengths.npy")
         for p in (index_path, per_residue, lengths_path):
             if not os.path.exists(p):
                 raise FileNotFoundError(
@@ -113,8 +124,9 @@ class ESMTcrLookup:
                 seen[cdr3] = row
         self.cdr3_to_row = seen
         logger.info(
-            "ESM CDR3 lookup: %d unique cdr3s, features (%d,%d,%d) float16",
-            len(self.cdr3_to_row), len(self.features), self.max_len, self.feature_dim,
+            "ESM %s lookup: %d unique cdr3s, features (%d,%d,%d) float16",
+            region, len(self.cdr3_to_row), len(self.features),
+            self.max_len, self.feature_dim,
         )
 
     def __contains__(self, cdr3: str) -> bool:
@@ -235,19 +247,28 @@ def parse_args():
                    help="one_hot (sparse, 164-dim) or cat_ae (dense learned, 65-dim). "
                         "Ignored unless --use_metadata is set.")
     p.add_argument("--esm_tcr", action="store_true",
-                   help="Feed per-residue ESM CDR3 hidden states into the TCR side "
+                   help="Feed per-residue ESM hidden states into the TCR side "
                         "instead of learning AA embeddings. Peptide side still uses "
                         "the learned AA embedding.")
+    p.add_argument("--esm_region", choices=["cdr3", "full"], default="cdr3",
+                   help="Which ESM region to use as the TCR sequence: 'cdr3' (~30 "
+                        "residues, just the CDR3 span) or 'full' (~160 residues, the "
+                        "full V-D-J variable region; constant region is excluded). "
+                        "Ignored unless --esm_tcr is set.")
     p.add_argument("--esm_dir", default="outputs/embeddings/esm",
-                   help="Directory containing cdr3_per_residue.npy / cdr3_lengths.npy "
-                        "/ embedding_index.csv. Ignored unless --esm_tcr is set.")
+                   help="Directory containing the {region}_per_residue.npy / "
+                        "{region}_lengths.npy / embedding_index.csv files. Ignored "
+                        "unless --esm_tcr is set.")
     return p.parse_args()
 
 
 def _resolve_out_dir(args) -> str:
     if args.out:
         return args.out
-    src    = "esm-cdr3" if args.esm_tcr else "raw"
+    if args.esm_tcr:
+        src = f"esm-{args.esm_region}"
+    else:
+        src = "raw"
     suffix = f"_aug-{args.metadata_type}" if args.use_metadata else ""
     return os.path.join(OUT_DIR, f"cross_attention_{src}{suffix}")
 
@@ -268,12 +289,14 @@ def main():
             if col not in df.columns:
                 raise ValueError(f"--{name} CSV is missing required column '{col}'")
 
-    # ── ESM CDR3 lookup (drops rows whose CDR3 lacks ESM coverage) ────────────
+    # ── ESM lookup (drops rows whose CDR3 lacks ESM coverage) ─────────────────
     tcr_lookup = None
     tcr_feature_dim = 0
+    max_tcr_len = TCR_MAX_LEN
     if args.esm_tcr:
-        tcr_lookup = ESMTcrLookup(args.esm_dir)
+        tcr_lookup = ESMTcrLookup(args.esm_dir, region=args.esm_region)
         tcr_feature_dim = tcr_lookup.feature_dim
+        max_tcr_len     = tcr_lookup.max_len
         df_train = tcr_lookup.filter_df(df_train, "train")
         df_val   = tcr_lookup.filter_df(df_val,   "val")
         df_test  = tcr_lookup.filter_df(df_test,  "test")
@@ -311,6 +334,7 @@ def main():
         d_model=args.d_model, n_heads=args.n_heads, n_layers=args.n_layers,
         dropout=args.dropout, meta_dim=meta_dim,
         tcr_feature_dim=tcr_feature_dim,
+        max_tcr_len=max_tcr_len,
     ).to(device)
     n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     logger.info(f"Parameters: {n_params:,}")
@@ -378,6 +402,7 @@ def main():
             "dropout":         args.dropout,
             "meta_dim":        meta_dim,
             "tcr_feature_dim": tcr_feature_dim,
+            "max_tcr_len":     max_tcr_len,
         },
         "args": vars(args),
     }, ckpt_path)
@@ -399,7 +424,7 @@ def main():
     experiment_name = os.path.basename(out_dir.rstrip("/"))
     summary_row = {
         "experiment_name":  experiment_name,
-        "tcr_input":        "esm/cdr3" if args.esm_tcr else "raw",
+        "tcr_input":        f"esm/{args.esm_region}" if args.esm_tcr else "raw",
         "metadata":         metadata_label,
         "n_params":         int(n_params),
         "n_train":          int(len(df_train)),
@@ -424,7 +449,7 @@ def _update_results_summary(root: str, row: dict) -> None:
     """Row-replace update of results_summary.csv keyed by experiment_name."""
     path = os.path.join(root, "results_summary.csv")
     columns = list(row.keys())
-    if os.path.exists(path):
+    if os.path.exists(path) and os.path.getsize(path) > 0:
         df = pd.read_csv(path)
         df = df[df["experiment_name"] != row["experiment_name"]]
         df = pd.concat([df, pd.DataFrame([row])], ignore_index=True)

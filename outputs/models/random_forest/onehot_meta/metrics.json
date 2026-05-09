@@ -1,18 +1,19 @@
 {
   "categorical": "one_hot",
   "experiment_name": "onehot_meta",
-  "input_dim": 1143,
+  "input_dim": 1145,
   "metrics": {
-    "accuracy": 0.7159422731356694,
-    "auprc": 0.48858580946965846,
-    "auroc": 0.6540583323557749,
-    "f1": 0.025994031000288822
+    "accuracy": 0.6716305242931649,
+    "auprc": 0.6225264175442928,
+    "auroc": 0.7686532360831734,
+    "f1": 0.034438689715477235,
+    "threshold": 0.43169398907103823
   },
   "model_type": "random_forest",
-  "n_test": 35616,
-  "n_train": 261118,
-  "n_train_combined": 292227,
-  "n_val": 31109,
+  "n_test": 43716,
+  "n_train": 115188,
+  "n_train_combined": 161226,
+  "n_val": 46038,
   "peptide_embedding": "one_hot",
   "tcr_embedding": "one_hot"
 }

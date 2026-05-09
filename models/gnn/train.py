@@ -415,7 +415,7 @@ def _update_results_summary(root: str, row: dict) -> None:
     with the same experiment_name, append this run's row, write back."""
     path = os.path.join(root, "results_summary.csv")
     columns = list(row.keys())
-    if os.path.exists(path):
+    if os.path.exists(path) and os.path.getsize(path) > 0:
         df = pd.read_csv(path)
         df = df[df["experiment_name"] != row["experiment_name"]]
         df = pd.concat([df, pd.DataFrame([row])], ignore_index=True)
