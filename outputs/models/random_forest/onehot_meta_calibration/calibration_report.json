@@ -1,0 +1,43 @@
+{
+  "auroc": 0.6538359252231479,
+  "auprc": 0.46601707178433915,
+  "calibration": {
+    "default_0.5": {
+      "threshold": 0.5,
+      "accuracy": 0.6700292798975204,
+      "f1": 0.02302742973247545,
+      "n_pred_positive": 194,
+      "n_true_positive": 14571
+    },
+    "val_optimal": {
+      "threshold": 0.068,
+      "accuracy": 0.3348430780492268,
+      "f1": 0.5004638378285517,
+      "n_pred_positive": 43639,
+      "n_true_positive": 14571,
+      "val_f1_at_threshold": 0.5003841312907956
+    },
+    "oob_optimal": {
+      "threshold": 0.4233128834355828,
+      "accuracy": 0.6706240278159027,
+      "f1": 0.05238565317538664,
+      "n_pred_positive": 624,
+      "n_true_positive": 14571,
+      "oob_f1_at_threshold": 0.8009822791526162
+    },
+    "test_oracle": {
+      "threshold": 0.226,
+      "accuracy": 0.5269695306066429,
+      "f1": 0.535877005947705,
+      "n_pred_positive": 29984,
+      "n_true_positive": 14571,
+      "test_f1_at_threshold": 0.5358770059472648
+    }
+  },
+  "probability_summary": {
+    "test_prob_mean": 0.2587882239912161,
+    "test_prob_median": 0.258,
+    "test_prob_p90": 0.344,
+    "test_prob_p99": 0.44
+  }
+}
