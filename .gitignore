@@ -3,7 +3,8 @@ iedb_data/*
 vdjdb_data/*
 vdjdb_csv/*
 mcpas_data/*
-processed/
+processed/*
+!processed/combined_trb_clean.csv
 
 # Logs
 *.log
