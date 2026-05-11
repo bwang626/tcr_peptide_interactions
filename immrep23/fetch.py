@@ -35,7 +35,7 @@ FILES = (
 
 
 def _download(url: str, dest: Path) -> None:
-    print(f"  → {dest.name} ... ", end="", flush=True)
+    print(f"  -> {dest.name} ... ", end="", flush=True)
     with urllib.request.urlopen(url) as r, open(dest, "wb") as f:
         f.write(r.read())
     print(f"{dest.stat().st_size/1024:.1f} KB")
@@ -55,7 +55,7 @@ def main() -> int:
     for name in FILES:
         dest = args.out / name
         if dest.exists() and not args.force:
-            print(f"  ✓ {name} already present (use --force to redownload)")
+            print(f"  [exists] {name} (use --force to redownload)")
             continue
         try:
             _download(f"{REPO_RAW}/{name}", dest)
