@@ -45,7 +45,7 @@ from models.gnn.train import (
 from immrep23.dataset import load_train, load_test_with_labels, split_train_val
 from immrep23.build_negatives import build_negatives
 from immrep23.evaluate import macro_auc01, overall_metrics
-from immrep23.feature_augment import PairedFeatureAugmenter
+from immrep23.feature_augment import make_paired_augmenter
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
@@ -120,14 +120,18 @@ def parse_args():
     ap.add_argument("--seed",       type=int,   default=42)
 
     ap.add_argument("--use_metadata", action="store_true",
-                    help="Append paired V/J + HLA one-hot metadata after pooling")
+                    help="Append paired V/J + HLA metadata after pooling")
+    ap.add_argument("--metadata_type", choices=["one_hot", "cat_ae"], default="cat_ae",
+                    help="Metadata encoder: one_hot (sparse, ~|V|+|J|+|HLA| dim) or "
+                         "cat_ae (dense learned, 5 * latent_dim = 160 dim by default). "
+                         "Default cat_ae matches the best-performing main-pipeline config.")
     return ap.parse_args()
 
 
 def _resolve_out(args) -> Path:
     if args.out:
         return args.out
-    suffix = "_meta" if args.use_metadata else ""
+    suffix = f"_aug-{args.metadata_type}" if args.use_metadata else ""
     return Path(OUT_DIR) / f"gnn_immrep23{suffix}"
 
 
@@ -159,13 +163,14 @@ def main():
     meta_dim = 0
     aug = None
     if args.use_metadata:
-        aug = PairedFeatureAugmenter()
+        aug = make_paired_augmenter(args.metadata_type)
         aug.fit(df_train)
         meta_tr = aug.transform(df_train).astype(np.float32)
         meta_va = aug.transform(df_val).astype(np.float32)
         meta_te = aug.transform(df_test).astype(np.float32)
         meta_dim = aug.feature_dim
-        logger.info("Metadata: dim=%d  (%s)", meta_dim, aug.feature_breakdown())
+        logger.info("Metadata (%s): dim=%d  (%s)",
+                    args.metadata_type, meta_dim, aug.feature_breakdown())
 
     # ── datasets / loaders ────────────────────────────────────────────────────
     has_meta = meta_dim > 0
@@ -276,7 +281,7 @@ def main():
         f.write(f"test_pooled_auroc={pooled['auroc']:.4f}\n")
         f.write(f"test_pooled_auprc={pooled['auprc']:.4f}\n")
         f.write(f"test_pooled_auc01={pooled['auc01']:.4f}\n")
-        f.write(f"metadata={'paired_one_hot' if args.use_metadata else 'none'}\n")
+        f.write(f"metadata={f"paired_{args.metadata_type}" if args.use_metadata else "none"}\n")
         f.write(f"n_params={n_params}\n")
 
     summary = {

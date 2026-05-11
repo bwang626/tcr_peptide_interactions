@@ -1,39 +1,46 @@
 """Train the cross-attention model on the IMMREP23 paired-chain dataset.
 
-Mirrors models/cross_attention/train.py but uses the IMMREP23 schema and
-the official Macro AUC0.1 metric. The TCR sequence fed to the model is
-the concatenation of CDR3α + CDR3β (gap-stripped, max 40 residues total).
+Two input modes:
+
+    Token mode (default):
+        TCR side = CDR3α + CDR3β concatenated (max 40 residues), encoded
+        with the model's learned AA embedding.
+
+    ESM mode (--esm_tcr):
+        TCR side = per-residue ESMplusplus_large hidden states for the
+        same CDR3α + CDR3β concatenation. Run `python -m immrep23.embed_esm`
+        first to produce the per-residue cache under
+        outputs/embeddings/esm_immrep23/{train,test}/.
+
+Optional metadata: --use_metadata appends a paired V/J + HLA encoding
+(--metadata_type one_hot or cat_ae). cat_ae mirrors the best-performing
+config from the main pipeline benchmark.
 
 Pipeline:
     1. Load IMMREP23 train (positives only) and generate negatives — either
-       pass --train pointing at a pre-built combined CSV from
-       `python -m immrep23.build_negatives ...`, or pass --raw_train
-       pointing at the raw VDJdb_paired_chain.csv and let this script
-       generate negatives in-memory.
+       pass --train pointing at a pre-built combined CSV, or pass
+       --raw_train pointing at the raw VDJdb_paired_chain.csv and let this
+       script generate negatives in-memory.
     2. Per-peptide stratified train/val split.
     3. Train with early stopping on val Macro AUC0.1.
-    4. Evaluate on the IMMREP23 test set (Public + Private combined).
+    4. Evaluate on the IMMREP23 test set with per-peptide breakdown.
 
-Run from repo root (after `python -m immrep23.fetch`):
-    # one-shot: generate negatives in-memory
-    python -m models.cross_attention.train_immrep23 \\
-        --raw_train immrep23_data/VDJdb_paired_chain.csv
+Run from repo root:
 
-    # or use a pre-built negatives file
-    python -m immrep23.build_negatives \\
-        --train immrep23_data/VDJdb_paired_chain.csv \\
-        --out   data/splits_immrep23/train.csv
+    # raw sequence + cat_ae metadata
     python -m models.cross_attention.train_immrep23 \\
-        --train data/splits_immrep23/train.csv
+        --raw_train immrep23_data/VDJdb_paired_chain.csv \\
+        --use_metadata --metadata_type cat_ae
 
-    # with paired V/J + HLA metadata
+    # ESM CDR3 + cat_ae metadata (best-performing main-pipeline config)
+    python -m immrep23.embed_esm                        # one-time, expensive
     python -m models.cross_attention.train_immrep23 \\
-        --raw_train immrep23_data/VDJdb_paired_chain.csv --use_metadata
+        --raw_train immrep23_data/VDJdb_paired_chain.csv \\
+        --esm_tcr --use_metadata --metadata_type cat_ae
 
 Outputs (outputs/models/cross_attention_immrep23/<run>/):
     checkpoints/checkpoint.pt    state_dict + config
-    metrics.txt                  per-epoch losses + final test metrics
-    metrics.json                 final test metrics + run config
+    metrics.txt / metrics.json   per-epoch losses + final test metrics
     per_peptide.csv              per-peptide AUC0.1 / AUROC / AUPRC on test
     feature_augment/             saved augmenter (only with --use_metadata)
 """
@@ -41,7 +48,6 @@ Outputs (outputs/models/cross_attention_immrep23/<run>/):
 import argparse
 import json
 import logging
-import os
 import random
 from pathlib import Path
 
@@ -59,14 +65,12 @@ from models.cross_attention.model import (
 from immrep23.dataset import load_train, load_test_with_labels, split_train_val
 from immrep23.build_negatives import build_negatives
 from immrep23.evaluate import macro_auc01, overall_metrics
-from immrep23.feature_augment import PairedFeatureAugmenter
+from immrep23.feature_augment import make_paired_augmenter
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
 
 OUT_DIR = "outputs/models/cross_attention_immrep23"
-
-# CDR3α + CDR3β concatenated. α typically ≤18, β typically ≤22 in the dataset.
 TCR_MAX_LEN_PAIRED = 40
 
 
@@ -104,36 +108,103 @@ def _load_train_with_negatives(args) -> pd.DataFrame:
     )
 
 
+# ── ESM per-residue lookup ────────────────────────────────────────────────────
+
+class ESMPairedLookup:
+    """Per-split (tcra, tcrb) → row index lookup for ESM CDR3 per-residue features.
+
+    Reads outputs/embeddings/esm_immrep23/<split>/ produced by
+    `python -m immrep23.embed_esm`. For the training+val pool use
+    split='train'; for the test pool use split='test'.
+    """
+
+    def __init__(self, esm_split_dir: Path):
+        esm_split_dir = Path(esm_split_dir)
+        per_residue = esm_split_dir / "cdr3_per_residue.npy"
+        lengths     = esm_split_dir / "cdr3_lengths.npy"
+        index       = esm_split_dir / "embedding_index.csv"
+        for p in (per_residue, lengths, index):
+            if not p.exists():
+                raise FileNotFoundError(
+                    f"Missing {p}. Run `python -m immrep23.embed_esm --splits {esm_split_dir.name}` first."
+                )
+
+        self.features = np.load(per_residue)            # (N, 40, D) float16
+        self.lengths  = np.load(lengths)                # (N,) int32
+        self.feature_dim = int(self.features.shape[2])
+        self.max_len     = int(self.features.shape[1])
+
+        idx = pd.read_csv(index, index_col=0)
+        if "tcra" not in idx.columns or "tcrb" not in idx.columns:
+            raise ValueError(f"{index} must have 'tcra' and 'tcrb' columns; got {list(idx.columns)}")
+
+        seen: dict[tuple[str, str], int] = {}
+        for row, (a, b) in enumerate(zip(idx["tcra"].astype(str), idx["tcrb"].astype(str))):
+            if (a, b) not in seen and self.lengths[row] > 0:
+                seen[(a, b)] = row
+        self.key_to_row = seen
+        logger.info("ESMPairedLookup(%s): %d unique (tcra, tcrb) pairs, hidden_dim=%d",
+                    esm_split_dir.name, len(seen), self.feature_dim)
+
+    def filter_df(self, df: pd.DataFrame, split: str) -> pd.DataFrame:
+        keys = list(zip(df["tcra"].astype(str), df["tcrb"].astype(str)))
+        keep = np.array([k in self.key_to_row for k in keys])
+        n_drop = int((~keep).sum())
+        if n_drop:
+            logger.warning("Dropping %d/%d %s rows missing ESM TCR features",
+                           n_drop, len(df), split)
+        return df.loc[keep].reset_index(drop=True)
+
+    def row_indices(self, df: pd.DataFrame) -> np.ndarray:
+        keys = list(zip(df["tcra"].astype(str), df["tcrb"].astype(str)))
+        return np.asarray([self.key_to_row[k] for k in keys], dtype=np.int64)
+
+
 # ── dataset / loader ──────────────────────────────────────────────────────────
 
 class PairedDataset(Dataset):
-    def __init__(self, df: pd.DataFrame):
-        self.tcrs   = df["cdr3"].tolist()       # CDR3a+CDR3b
+    def __init__(self, df: pd.DataFrame, tcr_feature_idx: np.ndarray | None = None):
+        self.tcrs   = df["cdr3"].tolist()
         self.peps   = df["peptide"].tolist()
         self.labels = df["label"].astype(float).tolist()
-        self.peptide_col = df["peptide"].tolist()  # for grouping at eval time
+        self.tcr_feature_idx = tcr_feature_idx
 
     def __len__(self):
         return len(self.tcrs)
 
     def __getitem__(self, i):
+        if self.tcr_feature_idx is not None:
+            return i, int(self.tcr_feature_idx[i]), self.peps[i], self.labels[i]
         return i, self.tcrs[i], self.peps[i], self.labels[i]
 
 
 def make_loader(df: pd.DataFrame, meta: np.ndarray | None,
-                batch_size: int, shuffle: bool, device: str) -> DataLoader:
-    ds = PairedDataset(df)
+                batch_size: int, shuffle: bool, device: str,
+                esm_lookup: ESMPairedLookup | None = None,
+                tcr_feature_idx: np.ndarray | None = None) -> DataLoader:
+    ds = PairedDataset(df, tcr_feature_idx=tcr_feature_idx)
+    use_features = esm_lookup is not None
 
     def collate(batch):
         idxs   = [b[0] for b in batch]
-        tcrs   = [b[1] for b in batch]
         peps   = [b[2] for b in batch]
         labels = [b[3] for b in batch]
-        ti, tm = collate_sequences(tcrs, TCR_MAX_LEN_PAIRED, device)
-        pi, pm = collate_sequences(peps, PEP_MAX_LEN,        device)
+        pi, pm = collate_sequences(peps, PEP_MAX_LEN, device)
         lbl = torch.tensor(labels, dtype=torch.float32, device=device)
         m = (torch.tensor(meta[idxs], dtype=torch.float32, device=device)
              if meta is not None else None)
+
+        if use_features:
+            feat_rows = np.asarray([b[1] for b in batch], dtype=np.int64)
+            feats = esm_lookup.features[feat_rows]                  # (B, L, D) float16
+            tlen  = esm_lookup.lengths[feat_rows]                   # (B,)
+            ti = torch.from_numpy(feats.astype(np.float32, copy=False)).to(device)
+            tm = torch.zeros((len(batch), esm_lookup.max_len), dtype=torch.float32, device=device)
+            for j, L in enumerate(tlen):
+                tm[j, :int(L)] = 1.0
+        else:
+            tcrs = [b[1] for b in batch]
+            ti, tm = collate_sequences(tcrs, TCR_MAX_LEN_PAIRED, device)
         return ti, pi, tm, pm, lbl, m
 
     return DataLoader(ds, batch_size=batch_size, shuffle=shuffle, collate_fn=collate)
@@ -152,18 +223,13 @@ def predict(model, loader) -> tuple[np.ndarray, np.ndarray]:
     return np.concatenate(labels_all), np.concatenate(probs_all)
 
 
-def val_macro_auc(model, df_val: pd.DataFrame, loader) -> tuple[float, float]:
-    """Returns (val_loss_dummy, macro_auc01) for early stopping signal.
-
-    We use a dummy 0 for loss because the scheduler call site expects two
-    values; the macro AUC0.1 is what we actually optimise against.
-    """
+def val_macro_auc(model, df_val: pd.DataFrame, loader) -> float:
     y, p = predict(model, loader)
-    df_eval = df_val.copy()
-    df_eval["score"] = p
+    df_eval = df_val[["peptide"]].copy()
     df_eval["label"] = y
+    df_eval["score"] = p
     macro, _ = macro_auc01(df_eval)
-    return 0.0, macro
+    return macro
 
 
 # ── CLI ───────────────────────────────────────────────────────────────────────
@@ -174,16 +240,14 @@ def parse_args():
     ap.add_argument("--train",     default=None, type=Path,
                     help="Pre-built combined positives+negatives CSV (from immrep23.build_negatives)")
     ap.add_argument("--raw_train", default=None, type=Path,
-                    help="Raw IMMREP23 training file (positives only). Negatives are generated in-memory.")
+                    help="Raw IMMREP23 training file (positives only). Negatives generated in-memory.")
     ap.add_argument("--test",      default=Path("immrep23_data/test.csv"), type=Path)
     ap.add_argument("--solutions", default=Path("immrep23_data/solutions.csv"), type=Path)
     ap.add_argument("--out",       default=None, type=Path)
 
-    ap.add_argument("--val_frac",  type=float, default=0.1,
-                    help="Per-peptide stratified fraction held out for early-stopping val")
-    ap.add_argument("--neg_per_pos", type=int, default=5,
-                    help="Negatives per positive for in-memory negative generation (--raw_train mode)")
-    ap.add_argument("--neg_seed",  type=int, default=42)
+    ap.add_argument("--val_frac",    type=float, default=0.1)
+    ap.add_argument("--neg_per_pos", type=int,   default=5)
+    ap.add_argument("--neg_seed",    type=int,   default=42)
 
     ap.add_argument("--d_model",     type=int,   default=64)
     ap.add_argument("--n_heads",     type=int,   default=4)
@@ -196,15 +260,25 @@ def parse_args():
     ap.add_argument("--seed",        type=int,   default=42)
 
     ap.add_argument("--use_metadata", action="store_true",
-                    help="Append paired V/J + HLA one-hot metadata after pooling")
+                    help="Append paired V/J + HLA metadata after pooling")
+    ap.add_argument("--metadata_type", choices=["one_hot", "cat_ae"], default="cat_ae",
+                    help="Metadata encoder. cat_ae matches the best-performing main-pipeline config.")
+
+    ap.add_argument("--esm_tcr", action="store_true",
+                    help="Use per-residue ESMplusplus_large features for the TCR side. "
+                         "Requires `python -m immrep23.embed_esm` to have been run first.")
+    ap.add_argument("--esm_dir", default=Path("outputs/embeddings/esm_immrep23"), type=Path,
+                    help="Root directory containing train/ and test/ subdirs with "
+                         "cdr3_per_residue.npy / cdr3_lengths.npy / embedding_index.csv.")
     return ap.parse_args()
 
 
 def _resolve_out(args) -> Path:
     if args.out:
         return args.out
-    suffix = "_meta" if args.use_metadata else ""
-    return Path(OUT_DIR) / f"cross_attention_immrep23{suffix}"
+    src = "esm-cdr3" if args.esm_tcr else "raw"
+    suffix = f"_aug-{args.metadata_type}" if args.use_metadata else ""
+    return Path(OUT_DIR) / f"cross_attention_immrep23_{src}{suffix}"
 
 
 # ── main ──────────────────────────────────────────────────────────────────────
@@ -230,34 +304,63 @@ def main():
     logger.info("Test: %d rows over %d peptides",
                 len(df_test), df_test["peptide"].nunique())
 
+    # ── ESM lookups ───────────────────────────────────────────────────────────
+    train_lookup = test_lookup = None
+    tcr_feature_dim = 0
+    max_tcr_len = TCR_MAX_LEN_PAIRED
+    tr_feat = va_feat = te_feat = None
+    if args.esm_tcr:
+        train_lookup = ESMPairedLookup(args.esm_dir / "train")
+        test_lookup  = ESMPairedLookup(args.esm_dir / "test")
+        if train_lookup.feature_dim != test_lookup.feature_dim:
+            raise ValueError(
+                f"Train/test ESM hidden dims differ: "
+                f"{train_lookup.feature_dim} vs {test_lookup.feature_dim}"
+            )
+        tcr_feature_dim = train_lookup.feature_dim
+        max_tcr_len     = train_lookup.max_len
+
+        df_train = train_lookup.filter_df(df_train, "train")
+        df_val   = train_lookup.filter_df(df_val,   "val")
+        df_test  = test_lookup.filter_df(df_test,   "test")
+
+        tr_feat = train_lookup.row_indices(df_train)
+        va_feat = train_lookup.row_indices(df_val)
+        te_feat = test_lookup.row_indices(df_test)
+
     # ── metadata ──────────────────────────────────────────────────────────────
     meta_train = meta_val = meta_test = None
     meta_dim = 0
     aug = None
     if args.use_metadata:
-        aug = PairedFeatureAugmenter()
+        aug = make_paired_augmenter(args.metadata_type)
         aug.fit(df_train)
         meta_train = aug.transform(df_train).astype(np.float32)
         meta_val   = aug.transform(df_val).astype(np.float32)
         meta_test  = aug.transform(df_test).astype(np.float32)
         meta_dim   = aug.feature_dim
-        logger.info("Metadata: dim=%d  (%s)", meta_dim, aug.feature_breakdown())
+        logger.info("Metadata (%s): dim=%d  (%s)",
+                    args.metadata_type, meta_dim, aug.feature_breakdown())
 
     # ── loaders ───────────────────────────────────────────────────────────────
-    train_loader = make_loader(df_train, meta_train, args.batch_size, True,  device)
-    val_loader   = make_loader(df_val,   meta_val,   args.batch_size, False, device)
-    test_loader  = make_loader(df_test,  meta_test,  args.batch_size, False, device)
+    train_loader = make_loader(df_train, meta_train, args.batch_size, True,  device,
+                               esm_lookup=train_lookup, tcr_feature_idx=tr_feat)
+    val_loader   = make_loader(df_val,   meta_val,   args.batch_size, False, device,
+                               esm_lookup=train_lookup, tcr_feature_idx=va_feat)
+    test_loader  = make_loader(df_test,  meta_test,  args.batch_size, False, device,
+                               esm_lookup=test_lookup,  tcr_feature_idx=te_feat)
 
     # ── model ─────────────────────────────────────────────────────────────────
     model = CrossAttentionTCRPep(
         d_model=args.d_model, n_heads=args.n_heads, n_layers=args.n_layers,
         dropout=args.dropout, meta_dim=meta_dim,
-        max_tcr_len=TCR_MAX_LEN_PAIRED,
+        tcr_feature_dim=tcr_feature_dim,
+        max_tcr_len=max_tcr_len,
     ).to(device)
     n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     logger.info("Parameters: %d", n_params)
 
-    opt   = torch.optim.Adam(model.parameters(), lr=args.lr)
+    opt = torch.optim.Adam(model.parameters(), lr=args.lr)
     n_pos = int(df_train["label"].sum())
     n_neg = len(df_train) - n_pos
     pos_weight = torch.tensor([n_neg / max(1, n_pos)], dtype=torch.float32, device=device)
@@ -279,7 +382,7 @@ def main():
             train_loss += loss.item() * labels.size(0)
             n          += labels.size(0)
 
-        _, val_macro = val_macro_auc(model, df_val, val_loader)
+        val_macro = val_macro_auc(model, df_val, val_loader)
         line = f"epoch={epoch:3d}  train_loss={train_loss/n:.4f}  val_macro_auc01={val_macro:.4f}"
         logger.info(line)
         metrics_lines.append(line)
@@ -303,7 +406,6 @@ def main():
     df_eval = df_test[["peptide"]].copy()
     df_eval["label"] = test_y
     df_eval["score"] = test_p
-
     macro, per_pep = macro_auc01(df_eval)
     pooled = overall_metrics(test_y, test_p)
     logger.info("Test  Macro AUC0.1 = %.4f", macro)
@@ -311,15 +413,19 @@ def main():
                 pooled["auroc"], pooled["auprc"], pooled["auc01"])
 
     # ── save ──────────────────────────────────────────────────────────────────
+    metadata_label = (f"paired_{args.metadata_type}" if args.use_metadata else "none")
+    tcr_input_label = "esm-cdr3" if args.esm_tcr else "raw"
+
     torch.save({
         "state_dict": best_state or model.state_dict(),
         "config": {
-            "d_model":     args.d_model,
-            "n_heads":     args.n_heads,
-            "n_layers":    args.n_layers,
-            "dropout":     args.dropout,
-            "meta_dim":    meta_dim,
-            "max_tcr_len": TCR_MAX_LEN_PAIRED,
+            "d_model":         args.d_model,
+            "n_heads":         args.n_heads,
+            "n_layers":        args.n_layers,
+            "dropout":         args.dropout,
+            "meta_dim":        meta_dim,
+            "tcr_feature_dim": tcr_feature_dim,
+            "max_tcr_len":     max_tcr_len,
         },
         "args": {k: (str(v) if isinstance(v, Path) else v) for k, v in vars(args).items()},
     }, out_dir / "checkpoints" / "checkpoint.pt")
@@ -335,13 +441,15 @@ def main():
         f.write(f"test_pooled_auroc={pooled['auroc']:.4f}\n")
         f.write(f"test_pooled_auprc={pooled['auprc']:.4f}\n")
         f.write(f"test_pooled_auc01={pooled['auc01']:.4f}\n")
-        f.write(f"metadata={'paired_one_hot' if args.use_metadata else 'none'}\n")
+        f.write(f"tcr_input={tcr_input_label}\n")
+        f.write(f"metadata={metadata_label}\n")
         f.write(f"n_params={n_params}\n")
 
     summary = {
         "experiment_name":        out_dir.name,
         "model":                  "cross_attention_paired",
-        "metadata":               "paired_one_hot" if args.use_metadata else "none",
+        "tcr_input":              tcr_input_label,
+        "metadata":               metadata_label,
         "n_params":               int(n_params),
         "n_train":                int(len(df_train)),
         "n_val":                  int(len(df_val)),
