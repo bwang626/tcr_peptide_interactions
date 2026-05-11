@@ -18,7 +18,6 @@ outputs/embeddings/
 outputs/_logs/
 **/_logs/
 *.npy
-*.pt
 *.joblib
 
 # vscode
