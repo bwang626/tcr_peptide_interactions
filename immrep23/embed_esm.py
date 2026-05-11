@@ -192,6 +192,7 @@ def embed_split(
     df: pd.DataFrame, split_name: str, out_root: Path,
     model, tokenizer, device: str, bos_offset: int,
     layer_idx: int, batch_size: int, hidden_dim: int,
+    tcrb_only: bool = False,
 ) -> None:
     out_dir = out_root / split_name
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -199,13 +200,19 @@ def embed_split(
     df = df.reset_index(drop=True)
     logger.info("[%s] %d rows", split_name, len(df))
 
-    unique_a = sorted(set(s for s in df["tcra"].astype(str) if s))
     unique_b = sorted(set(s for s in df["tcrb"].astype(str) if s))
-    logger.info("[%s] embedding %d unique TCRα + %d unique TCRβ",
-                split_name, len(unique_a), len(unique_b))
 
-    tcra_emb = _embed_unique_sequences(unique_a, model, tokenizer, device,
-                                       bos_offset, layer_idx, batch_size)
+    if tcrb_only:
+        logger.info("[%s] --tcrb_only: embedding %d unique TCRb (skipping TCRa)",
+                    split_name, len(unique_b))
+        tcra_emb = {}
+    else:
+        unique_a = sorted(set(s for s in df["tcra"].astype(str) if s))
+        logger.info("[%s] embedding %d unique TCRa + %d unique TCRb",
+                    split_name, len(unique_a), len(unique_b))
+        tcra_emb = _embed_unique_sequences(unique_a, model, tokenizer, device,
+                                           bos_offset, layer_idx, batch_size)
+
     tcrb_emb = _embed_unique_sequences(unique_b, model, tokenizer, device,
                                        bos_offset, layer_idx, batch_size)
 
@@ -248,6 +255,9 @@ def parse_args():
     ap.add_argument("--batch_size", type=int, default=DEFAULT_BATCH)
     ap.add_argument("--limit",      type=int, default=None,
                     help="Cap rows per split (smoke-test).")
+    ap.add_argument("--tcrb_only", action="store_true",
+                    help="Only embed TCRb sequences (skip TCRa). Use this when evaluating "
+                         "the single-chain beta cross-attention model — cuts runtime ~50%%.")
     return ap.parse_args()
 
 
@@ -273,14 +283,16 @@ def main() -> int:
         if args.limit:
             df_train = df_train.head(args.limit).reset_index(drop=True)
         embed_split(df_train, "train", args.out, model, tokenizer, device,
-                    bos_offset, layer_idx, args.batch_size, hidden_dim)
+                    bos_offset, layer_idx, args.batch_size, hidden_dim,
+                    tcrb_only=args.tcrb_only)
 
     if "test" in args.splits:
         df_test = load_test_with_labels(args.test, args.solutions)
         if args.limit:
             df_test = df_test.head(args.limit).reset_index(drop=True)
         embed_split(df_test, "test", args.out, model, tokenizer, device,
-                    bos_offset, layer_idx, args.batch_size, hidden_dim)
+                    bos_offset, layer_idx, args.batch_size, hidden_dim,
+                    tcrb_only=args.tcrb_only)
 
     logger.info("Done. Outputs under %s", args.out)
     return 0
